@@ -1,10 +1,11 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 
-export interface ReprocessJob {
+/** Uma passada de trabalho que reivindica um lote por lease (PENDING_REFERENCE, outbox). `claimed` diz se o lote veio cheio. */
+export interface PollingJob {
   runOnce(): Promise<{ claimed: number }>;
 }
 
-export interface WorkerOptions {
+export interface PollingWorkerOptions {
   /** Espera entre passadas quando não há lote cheio. */
   pollIntervalMs: number;
   /** Tamanho do lote do claim: uma passada que o preenche indica que há mais trabalho e repete sem esperar. */
@@ -14,16 +15,17 @@ export interface WorkerOptions {
 }
 
 /**
- * Loop periódico do worker. Sem estado de correção: só agenda `runOnce()`. Passadas nunca se sobrepõem (um único loop por instância)
- * e `stop()` espera a passada em andamento terminar, para o encerramento da aplicação não largar uma transação no meio.
+ * Loop periódico dos workers por lease (PENDING_REFERENCE e outbox). Sem estado de correção: só agenda `runOnce()`. Passadas nunca se
+ * sobrepõem (um único loop por instância) e `stop()` espera a passada em andamento terminar, para o encerramento da aplicação não largar
+ * uma transação no meio.
  */
-export class PendingReferenceWorker {
+export class PollingWorker {
   private loop: Promise<void> | undefined;
   private abort: AbortController | undefined;
 
   constructor(
-    private readonly job: ReprocessJob,
-    private readonly options: WorkerOptions,
+    private readonly job: PollingJob,
+    private readonly options: PollingWorkerOptions,
   ) {}
 
   get isRunning(): boolean {

@@ -16,7 +16,7 @@ import { SqsMessageQueue } from './infrastructure/messaging/sqs-message-queue';
 import { DEFAULT_LOCK_TIMEOUT_MS, MikroOrmUnitOfWork } from './infrastructure/persistence/mikro-orm-unit-of-work';
 import { describeError, logJson } from './infrastructure/observability/json-log';
 import { createOrmConfig } from './infrastructure/persistence/orm.config';
-import { PendingReferenceWorker } from './infrastructure/workers/pending-reference.worker';
+import { PollingWorker } from './infrastructure/workers/polling-worker';
 import { HttpExceptionFilter } from './interface/http/http-exception.filter';
 import { WageringController } from './interface/http/wagering.controller';
 import { WalletsController } from './interface/http/wallets.controller';
@@ -26,6 +26,8 @@ import { WAGER_CONSUMER_NAME, WagerMessageHandler } from './interface/sqs/wager-
 const ORM = Symbol('ORM');
 const UNIT_OF_WORK = Symbol('UNIT_OF_WORK');
 const SQS_CLIENT = Symbol('SQS_CLIENT');
+/** Dois loops do mesmo tipo (`PollingWorker`): o token distingue qual é qual na injeção. */
+export const PENDING_REFERENCE_WORKER = Symbol('PENDING_REFERENCE_WORKER');
 const POLL_INTERVAL_MS = 1000;
 
 /** Composição: os casos de uso são classes puras; o Nest só os instancia com as portas já resolvidas. */
@@ -54,10 +56,10 @@ const POLL_INTERVAL_MS = 1000;
     },
     {
       // Só é criado aqui; quem o inicia é o main.ts (os testes sobem o módulo sem loop em background).
-      provide: PendingReferenceWorker,
+      provide: PENDING_REFERENCE_WORKER,
       inject: [ReprocessPendingReferencesUseCase],
       useFactory: (useCase: ReprocessPendingReferencesUseCase) =>
-        new PendingReferenceWorker(useCase, {
+        new PollingWorker(useCase, {
           pollIntervalMs: POLL_INTERVAL_MS,
           batchSize: DEFAULT_REPROCESS_BATCH_SIZE,
           onError: (error) => logJson('error', 'pending_reference_worker_pass_failed', describeError(error)),
@@ -80,7 +82,7 @@ const POLL_INTERVAL_MS = 1000;
 export class AppModule implements BeforeApplicationShutdown, OnApplicationShutdown {
   constructor(
     @Inject(ORM) private readonly orm: MikroORM,
-    @Inject(PendingReferenceWorker) private readonly worker: PendingReferenceWorker,
+    @Inject(PENDING_REFERENCE_WORKER) private readonly worker: PollingWorker,
     @Inject(QueueConsumer) private readonly consumer: QueueConsumer,
     @Inject(SQS_CLIENT) private readonly sqs: SQSClient,
   ) {}

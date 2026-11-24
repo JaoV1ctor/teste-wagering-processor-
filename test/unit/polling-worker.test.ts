@@ -1,7 +1,7 @@
 // Mecânica do loop periódico (start/stop/erros), isolada do banco com um `runOnce` de mentira: aqui não há Postgres a mockar,
-// só o relógio de espera. O comportamento com o banco real está em test/integration/pending-reference-worker.test.ts.
+// só o relógio de espera. O comportamento com o banco real está em test/integration/pending-reference-worker.test.ts e outbox-publisher.test.ts.
 import { afterEach, describe, expect, test } from 'bun:test';
-import { PendingReferenceWorker } from '../../src/infrastructure/workers/pending-reference.worker';
+import { PollingWorker } from '../../src/infrastructure/workers/polling-worker';
 
 const empty = { claimed: 0 };
 // Nestes testes o runOnce de mentira não falha: qualquer erro reportado é registrado e derruba o teste no afterEach.
@@ -13,12 +13,12 @@ afterEach(() => {
   expect(unexpected.splice(0)).toEqual([]);
 });
 
-describe('PendingReferenceWorker', () => {
+describe('PollingWorker', () => {
   test('start() executa runOnce repetidamente; start() de novo não cria um segundo loop', async () => {
     let calls = 0;
     let concurrent = 0;
     let maxConcurrent = 0;
-    const worker = new PendingReferenceWorker(
+    const worker = new PollingWorker(
       {
         runOnce: async () => {
           calls += 1;
@@ -42,7 +42,7 @@ describe('PendingReferenceWorker', () => {
   test('stop() espera a execução em andamento terminar e depois nenhuma nova começa', async () => {
     let started = 0;
     let finished = 0;
-    const worker = new PendingReferenceWorker(
+    const worker = new PollingWorker(
       { runOnce: async () => { started += 1; await Bun.sleep(80); finished += 1; return empty; } },
       { pollIntervalMs: 5, batchSize: 10, onError: record },
     );
@@ -58,7 +58,7 @@ describe('PendingReferenceWorker', () => {
   });
 
   test('stop() sem start() e stop() repetido são inofensivos', async () => {
-    const worker = new PendingReferenceWorker({ runOnce: async () => empty }, { pollIntervalMs: 5, batchSize: 10, onError: record });
+    const worker = new PollingWorker({ runOnce: async () => empty }, { pollIntervalMs: 5, batchSize: 10, onError: record });
     await worker.stop();
     worker.start();
     await worker.stop();
@@ -70,7 +70,7 @@ describe('PendingReferenceWorker', () => {
     const boom = new Error('banco fora');
     const reported: unknown[] = [];
     let calls = 0;
-    const worker = new PendingReferenceWorker(
+    const worker = new PollingWorker(
       { runOnce: async () => { calls += 1; if (calls === 1) throw boom; return empty; } },
       { pollIntervalMs: 5, batchSize: 10, onError: (error) => reported.push(error) },
     );
@@ -82,7 +82,7 @@ describe('PendingReferenceWorker', () => {
 
   test('lote cheio: reexecuta de imediato, sem esperar o intervalo de polling', async () => {
     let calls = 0;
-    const worker = new PendingReferenceWorker(
+    const worker = new PollingWorker(
       { runOnce: async () => { calls += 1; return { claimed: calls < 4 ? 10 : 0 }; } },
       { pollIntervalMs: 60_000, batchSize: 10, onError: record },
     );

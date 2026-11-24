@@ -7,7 +7,7 @@ import { MikroORM } from '@mikro-orm/postgresql';
 import { type ReprocessOptions, ReprocessPendingReferencesUseCase } from '../../src/application/reprocess-pending-references.use-case';
 import type { Repositories, UnitOfWork } from '../../src/application/ports';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
-import { PendingReferenceWorker } from '../../src/infrastructure/workers/pending-reference.worker';
+import { PollingWorker } from '../../src/infrastructure/workers/polling-worker';
 import { createOrmConfig } from '../../src/infrastructure/persistence/orm.config';
 import { type Api, startApi } from '../support/app';
 import { createProbe, ensureSchema, ledgerBalance, parkPendingReferences } from '../support/db';
@@ -331,7 +331,7 @@ describe('falha ao reprocessar uma transação', () => {
   });
 });
 
-describe('loop periódico (PendingReferenceWorker) com o banco real', () => {
+describe('loop periódico (PollingWorker) com o banco real', () => {
   test('start() resolve a pendência em background assim que ela vence; stop() espera a execução corrente e encerra o loop', async () => {
     const wallet = await openWallet(api, '100.00');
     const bet = wagerPayload(wallet, { money: money('30.00') });
@@ -341,7 +341,7 @@ describe('loop periódico (PendingReferenceWorker) com o banco real', () => {
     // Relógio real: a tentativa vence em ~1s; o teste espera a CONDIÇÃO (com prazo), não um tempo fixo.
     const errors: unknown[] = [];
     const onError = (error: unknown) => errors.push(error);
-    const loop = new PendingReferenceWorker(new ReprocessPendingReferencesUseCase(uow, { batchSize: 10, onError }), { pollIntervalMs: 25, batchSize: 10, onError });
+    const loop = new PollingWorker(new ReprocessPendingReferencesUseCase(uow, { batchSize: 10, onError }), { pollIntervalMs: 25, batchSize: 10, onError });
     loop.start();
     try {
       const deadline = Date.now() + 15_000;
