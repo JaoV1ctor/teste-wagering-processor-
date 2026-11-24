@@ -1,11 +1,14 @@
 import { type EntityManager, UniqueConstraintViolationException } from '@mikro-orm/postgresql';
 import { IdempotencyConflictError, WalletAlreadyExistsError } from '../../application/errors';
 import type {
-  ClaimedPendingReference, LedgerRecord, LedgerRepository, ListLedgerOptions, WagerTransactionRepository, WalletRepository,
+  ClaimedPendingReference, InboxRepository, LedgerRecord, LedgerRepository, ListLedgerOptions, WagerTransactionRepository, WalletRepository,
 } from '../../application/ports';
+import type { InboxMessage } from '../../domain/inbox-message';
 import type { LedgerEntry } from '../../domain/ledger-entry';
 import type { WagerTransaction } from '../../domain/wager-transaction';
 import type { Wallet } from '../../domain/wallet';
+import { InboxMessageEntity } from './inbox-message.entity';
+import { InboxMessageMapper } from './inbox-message.mapper';
 import { LedgerEntryEntity } from './ledger-entry.entity';
 import { LedgerEntryMapper } from './ledger-entry.mapper';
 import { WagerTransactionEntity } from './wager-transaction.entity';
@@ -151,5 +154,33 @@ export class MikroOrmLedgerRepository implements LedgerRepository {
       { orderBy: { seq: 'asc' }, limit },
     );
     return entities.map((entity) => ({ seq: BigInt(entity.seq ?? ''), entry: LedgerEntryMapper.toDomain(entity) }));
+  }
+}
+
+export class MikroOrmInboxRepository implements InboxRepository {
+  constructor(private readonly em: EntityManager) {}
+
+  async addIfAbsent(message: InboxMessage): Promise<boolean> {
+    const e = InboxMessageMapper.toEntity(message);
+    const inserted = await this.em.execute<unknown[]>(
+      `insert into inbox_messages (consumer_name, message_id, payload_hash, received_at)
+       values (?, ?, ?, ?::timestamptz)
+       on conflict (consumer_name, message_id) do nothing returning message_id`,
+      [e.consumerName, e.messageId, e.payloadHash, e.receivedAt.toISOString()],
+    );
+    return inserted.length === 1;
+  }
+
+  async find(consumerName: string, messageId: string): Promise<InboxMessage | undefined> {
+    const entity = await this.em.findOne(InboxMessageEntity, { consumerName, messageId });
+    return entity ? InboxMessageMapper.toDomain(entity) : undefined;
+  }
+
+  async markProcessed(message: InboxMessage): Promise<void> {
+    await this.em.nativeUpdate(
+      InboxMessageEntity,
+      { consumerName: message.consumerName, messageId: message.messageId },
+      { processedAt: message.processedAt ?? null },
+    );
   }
 }

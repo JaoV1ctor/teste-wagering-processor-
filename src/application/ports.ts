@@ -1,3 +1,4 @@
+import type { InboxMessage } from '../domain/inbox-message';
 import type { LedgerEntry } from '../domain/ledger-entry';
 import type { WagerTransaction } from '../domain/wager-transaction';
 import type { Wallet } from '../domain/wallet';
@@ -64,10 +65,22 @@ export interface LedgerRepository {
   listByWallet(walletId: string, options: ListLedgerOptions): Promise<LedgerRecord[]>;
 }
 
+export interface InboxRepository {
+  /**
+   * `INSERT ... ON CONFLICT (consumer_name, message_id) DO NOTHING`: `true` se esta transação é a dona da mensagem, `false` se já existia.
+   * Com uma entrega concorrente em voo, o INSERT espera o commit dela (índice único): nunca dois donos.
+   */
+  addIfAbsent(message: InboxMessage): Promise<boolean>;
+  find(consumerName: string, messageId: string): Promise<InboxMessage | undefined>;
+  /** Grava `processedAt` de uma mensagem que esta transação possui. */
+  markProcessed(message: InboxMessage): Promise<void>;
+}
+
 export interface Repositories {
   wallets: WalletRepository;
   transactions: WagerTransactionRepository;
   ledger: LedgerRepository;
+  inbox: InboxRepository;
 }
 
 export interface UnitOfWork {

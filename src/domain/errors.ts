@@ -40,3 +40,5 @@ export class InvalidTransactionStateError extends DomainError {
     super(`Transação ${transactionId} em ${status} não aceita ${attempted}`);
   }
 }
+
+export class InvalidInboxMessageError extends DomainError {}

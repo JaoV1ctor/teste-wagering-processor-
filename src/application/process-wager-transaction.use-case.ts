@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { InboxMessage } from '../domain/inbox-message';
 import type { Money } from '../domain/money';
 import { WagerTransaction, type WagerTransactionKind } from '../domain/wager-transaction';
-import { IdempotencyConflictError, WalletNotFoundError } from './errors';
+import { IdempotencyConflictError, InboxPayloadConflictError, WalletNotFoundError } from './errors';
 import { computePayloadHash } from './payload-hash';
-import type { UnitOfWork } from './ports';
+import type { Repositories, UnitOfWork } from './ports';
 import { settleLocked } from './settle-locked-transaction';
 
 /** Entrada única do caso de uso: HTTP hoje, SQS na Fase 4. Os campos de negócio entram no `payloadHash`; a chave não. */
@@ -26,6 +27,17 @@ export interface ProcessWagerResult {
   idempotentReplay: boolean;
 }
 
+/** De onde veio a mensagem (entrada SQS). A chave `(consumerName, messageId)` do inbox deduplica entregas repetidas. */
+export interface MessageOrigin {
+  consumerName: string;
+  messageId: string;
+}
+
+/** A mensagem já tinha sido processada por este consumidor: nada foi feito e o chamador pode confirmá-la (ack). */
+export interface DuplicateMessageResult {
+  duplicateMessage: true;
+}
+
 /**
  * SPEC §6. Idempotência decidida pelo banco (UNIQUE), nunca por estado em memória.
  * Ordem de locks e escrita: wallet -> transação -> ledger. A transação nasce PENDING no domínio e é gravada UMA vez, no estado final
@@ -38,7 +50,9 @@ export class ProcessWagerTransactionUseCase {
     private readonly newId: () => string = randomUUID,
   ) {}
 
-  async execute(command: ProcessWagerCommand): Promise<ProcessWagerResult> {
+  async execute(command: ProcessWagerCommand): Promise<ProcessWagerResult>;
+  async execute(command: ProcessWagerCommand, origin: MessageOrigin): Promise<ProcessWagerResult | DuplicateMessageResult>;
+  async execute(command: ProcessWagerCommand, origin?: MessageOrigin): Promise<ProcessWagerResult | DuplicateMessageResult> {
     const payloadHash = computePayloadHash({
       providerId: command.providerId, externalTransactionId: command.externalTransactionId, playerId: command.playerId,
       walletId: command.walletId, roundId: command.roundId, gameId: command.gameId, kind: command.kind, money: command.money.toProps(),
@@ -49,32 +63,59 @@ export class ProcessWagerTransactionUseCase {
     const known = await this.uow.read(({ transactions }) => transactions.findByIdempotencyKey(command.idempotencyKey));
     if (known) return replayOf(known, payloadHash);
 
-    return this.uow.run(async ({ wallets, transactions, ledger }) => {
-      const wallet = await wallets.lockWallet(command.walletId);
-      if (!wallet) throw new WalletNotFoundError(command.walletId);
+    return this.uow.run(async (repositories) => {
+      // SPEC §6 passo 3: o inbox entra na MESMA transação, antes do lock da wallet (não toca a wallet, então a ordem de locks não muda).
+      const inbox = origin ? await this.receive(repositories, origin, payloadHash) : undefined;
+      if (inbox === 'duplicate') return { duplicateMessage: true as const };
 
-      const now = this.clock();
-      const transaction = WagerTransaction.create({
-        id: this.newId(), providerId: command.providerId, externalTransactionId: command.externalTransactionId,
-        idempotencyKey: command.idempotencyKey, payloadHash, walletId: wallet.id, playerId: command.playerId, roundId: command.roundId,
-        gameId: command.gameId, kind: command.kind, money: command.money, now,
-        ...(command.referenceExternalTransactionId === undefined ? {} : { referenceExternalTransactionId: command.referenceExternalTransactionId }),
-      });
-      // Lê a referência (se houver) e decide; nada é gravado ainda. Com a wallet travada, o que lemos não muda até o commit.
-      const entry = await settleLocked({ transactions }, wallet, transaction, { entryId: this.newId(), at: now });
-
-      if (!(await transactions.addIdempotent(transaction))) {
-        // Outra requisição com a mesma chave commitou antes: nada do que decidimos em memória foi gravado.
-        const winner = await transactions.findByIdempotencyKey(command.idempotencyKey);
-        if (!winner) throw new Error('Chave de idempotência em conflito, mas a transação vencedora não está visível');
-        return replayOf(winner, payloadHash);
+      const result = await this.processLocked(repositories, command, payloadHash);
+      if (inbox) {
+        inbox.markProcessed(this.clock());
+        await repositories.inbox.markProcessed(inbox);
       }
-      if (entry) {
-        await wallets.saveBalance(wallet);
-        await ledger.add(entry);
-      }
-      return { transaction, idempotentReplay: false };
+      return result;
     });
+  }
+
+  /** `duplicate` se o consumidor já processou esta mensagem; lança se o mesmo `messageId` chegou com outro conteúdo. */
+  private async receive({ inbox }: Repositories, origin: MessageOrigin, payloadHash: string): Promise<InboxMessage | 'duplicate'> {
+    const message = InboxMessage.receive({ ...origin, payloadHash, now: this.clock() });
+    if (await inbox.addIfAbsent(message)) return message;
+    const existing = await inbox.find(origin.consumerName, origin.messageId);
+    if (!existing) throw new Error('Mensagem do inbox em conflito, mas a linha vencedora não está visível');
+    if (!existing.matchesPayload(payloadHash)) throw new InboxPayloadConflictError(origin.messageId);
+    return 'duplicate';
+  }
+
+  private async processLocked(
+    { wallets, transactions, ledger }: Repositories,
+    command: ProcessWagerCommand,
+    payloadHash: string,
+  ): Promise<ProcessWagerResult> {
+    const wallet = await wallets.lockWallet(command.walletId);
+    if (!wallet) throw new WalletNotFoundError(command.walletId);
+
+    const now = this.clock();
+    const transaction = WagerTransaction.create({
+      id: this.newId(), providerId: command.providerId, externalTransactionId: command.externalTransactionId,
+      idempotencyKey: command.idempotencyKey, payloadHash, walletId: wallet.id, playerId: command.playerId, roundId: command.roundId,
+      gameId: command.gameId, kind: command.kind, money: command.money, now,
+      ...(command.referenceExternalTransactionId === undefined ? {} : { referenceExternalTransactionId: command.referenceExternalTransactionId }),
+    });
+    // Lê a referência (se houver) e decide; nada é gravado ainda. Com a wallet travada, o que lemos não muda até o commit.
+    const entry = await settleLocked({ transactions }, wallet, transaction, { entryId: this.newId(), at: now });
+
+    if (!(await transactions.addIdempotent(transaction))) {
+      // Outra requisição com a mesma chave commitou antes: nada do que decidimos em memória foi gravado.
+      const winner = await transactions.findByIdempotencyKey(command.idempotencyKey);
+      if (!winner) throw new Error('Chave de idempotência em conflito, mas a transação vencedora não está visível');
+      return replayOf(winner, payloadHash);
+    }
+    if (entry) {
+      await wallets.saveBalance(wallet);
+      await ledger.add(entry);
+    }
+    return { transaction, idempotentReplay: false };
   }
 }
 
