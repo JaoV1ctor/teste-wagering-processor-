@@ -23,6 +23,16 @@ export enum WagerTransactionStatus {
 const K = WagerTransactionKind;
 const S = WagerTransactionStatus;
 
+/** Tipos que cada tipo pode referenciar (README §7 regra 3; WIN/LOSS só a BET, SPEC §3.4). Quem não aparece não referencia nada. */
+const REFERENCEABLE_KINDS: Partial<Record<WagerTransactionKind, readonly WagerTransactionKind[]>> = {
+  [K.Refund]: [K.Bet],
+  [K.Rollback]: [K.Bet, K.Win, K.Refund],
+  [K.Win]: [K.Bet],
+  [K.Loss]: [K.Bet],
+};
+
+export const referenceableKinds = (kind: WagerTransactionKind): readonly WagerTransactionKind[] => REFERENCEABLE_KINDS[kind] ?? [];
+
 export interface WagerTransactionState {
   id: string;
   providerId: string;
@@ -71,6 +81,9 @@ export class WagerTransaction {
     }
     if ((props.kind === K.Bet || props.kind === K.Opening) && hasReference) {
       throw new InvalidWagerTransactionError(`${props.kind} não aceita referenceExternalTransactionId`);
+    }
+    if (hasReference && props.referenceExternalTransactionId === props.externalTransactionId) {
+      throw new InvalidWagerTransactionError('Uma transação não pode referenciar a si mesma');
     }
     const { now, referenceExternalTransactionId, ...identity } = props;
     return new WagerTransaction({
@@ -179,9 +192,8 @@ export class WagerTransaction {
       case K.Loss:
         throw new InvalidWagerTransactionError('LOSS não move saldo');
       case K.Refund:
-        return reversalDirection(this, reference, [K.Bet]);
       case K.Rollback:
-        return reversalDirection(this, reference, [K.Bet, K.Win, K.Refund]);
+        return reversalDirection(this, reference);
     }
   }
 
@@ -194,8 +206,8 @@ export class WagerTransaction {
   }
 }
 
-function reversalDirection(tx: WagerTransaction, reference: WagerTransaction | undefined, allowed: WagerTransactionKind[]): LedgerDirection {
+function reversalDirection(tx: WagerTransaction, reference: WagerTransaction | undefined): LedgerDirection {
   if (!reference) throw new InvalidWagerTransactionError(`${tx.kind} exige a transação referenciada`);
-  if (!allowed.includes(reference.kind)) throw new InvalidWagerTransactionError(`${tx.kind} não pode reverter ${reference.kind}`);
+  if (!referenceableKinds(tx.kind).includes(reference.kind)) throw new InvalidWagerTransactionError(`${tx.kind} não pode reverter ${reference.kind}`);
   return reference.kind === K.Bet ? LedgerDirection.Credit : LedgerDirection.Debit;
 }

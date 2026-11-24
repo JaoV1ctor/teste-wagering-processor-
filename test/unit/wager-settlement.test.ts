@@ -160,14 +160,12 @@ test('player e moeda divergentes ao mesmo tempo: PLAYER_MISMATCH tem precedênci
   expect(tx.failureCode).toBe(FailureCode.PlayerMismatch);
 });
 
-test.each([WagerTransactionKind.Refund, WagerTransactionKind.Rollback, WagerTransactionKind.Opening])(
-  '%s não é liquidada aqui (reversões são da Fase 3; OPENING é interna): erro de programação',
-  (kind) => {
-    const wallet = walletWith('100.00');
-    const base = { id: uuid(), providerId: 'p', externalTransactionId: 'e', idempotencyKey: 'k', payloadHash: 'a'.repeat(64), walletId: wallet.id,
-      playerId: wallet.playerId, roundId: 'r', gameId: 'g', kind, money: money('10.00'), now: at };
-    const tx = WagerTransaction.create(kind === WagerTransactionKind.Opening ? base : { ...base, referenceExternalTransactionId: 'ref' });
-    expect(() => settle(wallet, tx)).toThrow(InvalidWagerTransactionError);
-    expect(wallet.balance.toString()).toBe('100.00');
-  },
-);
+test('OPENING é interna e nunca é liquidada aqui: erro de programação, wallet intacta', () => {
+  const wallet = walletWith('100.00');
+  const tx = WagerTransaction.create({
+    id: uuid(), providerId: 'p', externalTransactionId: 'e', idempotencyKey: 'k', payloadHash: 'a'.repeat(64), walletId: wallet.id,
+    playerId: wallet.playerId, roundId: 'r', gameId: 'g', kind: WagerTransactionKind.Opening, money: money('10.00'), now: at,
+  });
+  expect(() => settle(wallet, tx)).toThrow(InvalidWagerTransactionError);
+  expect(wallet.balance.toString()).toBe('100.00');
+});

@@ -40,6 +40,13 @@ describe('create: referência por kind (espelha o CHECK do schema)', () => {
     expect(() => make(K.Opening, 'x')).toThrow(InvalidWagerTransactionError);
   });
 
+  test('uma transação não pode referenciar a si mesma (espelha wt_not_self_reference)', () => {
+    expect(() => WagerTransaction.create({
+      id: 'x', providerId: 'p', externalTransactionId: 'mesmo', idempotencyKey: 'k', payloadHash: 'h', walletId: 'w', playerId: 'p',
+      roundId: 'r', gameId: 'g', kind: K.Refund, money: brl('1'), referenceExternalTransactionId: 'mesmo', now: t0,
+    })).toThrow(InvalidWagerTransactionError);
+  });
+
   test('WIN e LOSS aceitam referência opcional', () => {
     expect(make(K.Win).requiresReference()).toBe(false);
     expect(make(K.Win, 'ext-bet').referenceExternalTransactionId).toBe('ext-bet');
@@ -141,6 +148,42 @@ describe('máquina de estados (SPEC §4)', () => {
   test('reject exige código de rejeição e fail exige código de falha permanente', () => {
     expect(() => make(K.Bet).reject(FailureCode.InternalPermanentError, brl('1'), t1)).toThrow(InvalidWagerTransactionError);
     expect(() => make(K.Bet).fail(FailureCode.InsufficientBalance, t1)).toThrow(InvalidWagerTransactionError);
+  });
+});
+
+describe('PENDING_REFERENCE nunca volta a PENDING (SPEC §4; o trigger do banco repete a regra)', () => {
+  const pending = () => {
+    const tx = make(K.Refund, 'ext-bet');
+    tx.markPendingReference(t1, t0);
+    return tx;
+  };
+
+  test('nenhuma transição do domínio, a partir de PENDING_REFERENCE, devolve PENDING', () => {
+    const transitions: [string, (tx: WagerTransaction) => void][] = [
+      ['markPendingReference', (tx) => tx.markPendingReference(t1, t1)],
+      ['markProcessed', (tx) => tx.markProcessed({ observedBalance: brl('1'), at: t1, referenceTransactionId: 'bet' })],
+      ['reject', (tx) => tx.reject(FailureCode.ReferenceNotFound, brl('1'), t1)],
+      ['fail', (tx) => tx.fail(FailureCode.InternalPermanentError, t1)],
+    ];
+    for (const [name, transition] of transitions) {
+      const tx = pending();
+      transition(tx);
+      expect(tx.status, name).not.toBe(S.Pending);
+    }
+  });
+
+  test('o único jeito de ter PENDING é nascer (create); reidratar PENDING_REFERENCE preserva o estado', () => {
+    expect(make(K.Refund, 'ext-bet').status).toBe(S.Pending);
+    const copy = WagerTransaction.rehydrate(pending().toState());
+    expect(copy.status).toBe(S.PendingReference);
+    copy.markPendingReference(t1, t1);
+    expect(copy.status).toBe(S.PendingReference);
+    expect(copy.attempts).toBe(2);
+  });
+
+  test('não existe API pública que reponha PENDING', () => {
+    const api = Object.getOwnPropertyNames(WagerTransaction.prototype).filter((name) => /pending$/i.test(name) && name !== 'markPendingReference');
+    expect(api).toEqual([]);
   });
 });
 
