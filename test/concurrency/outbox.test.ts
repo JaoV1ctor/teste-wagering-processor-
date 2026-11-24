@@ -94,7 +94,7 @@ const countUnpublished = async (walletIds: string[]): Promise<number> =>
   (await Promise.all(walletIds.map((id) => outboxOfWallet(probe, id)))).flat().filter((row) => row.published_at === null).length;
 
 describe('#6 dois publishers concorrentes na mesma outbox', () => {
-  test('nenhum evento perdido e, sem falhas, nenhum duplicado: os claims são disjuntos', async () => {
+  test('nenhum evento perdido e, sem falhas, nenhum duplicado: claims disjuntos que PULAM a linha travada por outra transação', async () => {
     await parkOutbox(probe);
     const sink = new EventSink(sqs, queues.eventsUrl);
     await sink.collect();
@@ -102,20 +102,38 @@ describe('#6 dois publishers concorrentes na mesma outbox', () => {
     const { walletIds, eventIds } = await seedEvents(10, 5); // 50 transações => 100 eventos
     expect(eventIds.size).toBe(100);
 
-    const a = spawnPublisher({});
-    const b = spawnPublisher({});
-    await Promise.all([a.ready, b.ready]);
-    const [resultA, resultB] = await Promise.all([a.go(), b.go()]); // largam juntas
+    // Uma transação alheia segura o evento mais antigo (o primeiro que os dois claims escolheriam) durante toda a publicação.
+    // Com FOR UPDATE SKIP LOCKED os publishers a pulam; sem SKIP LOCKED ficariam esperando e estourariam o lock_timeout.
+    const holder = await probe.connect();
+    let locked: string;
+    try {
+      await holder.query('begin');
+      const { rows } = await holder.query<{ id: string }>('select id from outbox_messages where id = any($1) order by next_attempt_at limit 1 for update', [[...eventIds]]);
+      locked = rows[0]?.id ?? '';
+      expect(eventIds.has(locked)).toBe(true);
 
-    expect(resultA).toBeDefined();
-    expect(resultB).toBeDefined();
-    const published = (resultA?.published ?? 0) + (resultB?.published ?? 0);
-    expect(published).toBe(100); // soma dos dois publishers == total: ninguém ficou sem
-    expect(resultA?.failed).toBe(0);
-    expect(resultB?.failed).toBe(0);
+      const a = spawnPublisher({});
+      const b = spawnPublisher({});
+      await Promise.all([a.ready, b.ready]);
+      const [resultA, resultB] = await Promise.all([a.go(), b.go()]); // largam juntas
+      expect(resultA).toBeDefined();
+      expect(resultB).toBeDefined();
+      expect(resultA?.failed).toBe(0);
+      expect(resultB?.failed).toBe(0);
+      expect((resultA?.published ?? 0) + (resultB?.published ?? 0)).toBe(99); // tudo, menos o que estava travado
+    } finally {
+      await holder.query('rollback');
+      holder.release();
+    }
+
+    // Liberada a linha, um terceiro publisher entrega o que sobrou.
+    const last = spawnPublisher({});
+    await last.ready;
+    expect((await last.go())?.published).toBe(1);
 
     await sink.waitUntil('100 eventos', (s) => s.uniqueIds.size >= 100);
     expect(sink.uniqueIds).toEqual(eventIds); // nenhum perdido, nenhum de fora
+    expect(sink.uniqueIds.has(locked)).toBe(true);
     expect(sink.duplicates).toBe(0);
     expect(await countUnpublished(walletIds)).toBe(0);
     for (const walletId of walletIds) await expectEventsConsistentWithLedger(probe, walletId);
