@@ -77,6 +77,25 @@ describe('POST /wagering/transactions — resultados de negócio', () => {
     expect(await ledgerBalance(probe, wallet.walletId)).toEqual({ stored: '100.00', rebuilt: '100.00', entries: 1 });
   });
 
+  test('WIN que estoura NUMERIC(19,2): 422 BALANCE_LIMIT_EXCEEDED auditável (não 500), sem lançamento; replay devolve o mesmo 422', async () => {
+    const wallet = await openWallet(api, '99999999999999999.00');
+    const payload = wagerPayload(wallet, { kind: 'WIN', money: { amount: '1.01', currency: 'BRL' } });
+    const first = await post(payload);
+
+    expect(first.status).toBe(422);
+    expect(first.body).toEqual({
+      transactionId: expect.any(String), status: 'REJECTED', balance: { amount: '99999999999999999.00', currency: 'BRL' },
+      idempotentReplay: false, failureCode: 'BALANCE_LIMIT_EXCEEDED',
+    });
+    expect(await rows('select status, failure_code from wager_transactions where id = $1', [first.body.transactionId])).toEqual([
+      { status: 'REJECTED', failure_code: 'BALANCE_LIMIT_EXCEEDED' },
+    ]);
+    expect(await ledgerBalance(probe, wallet.walletId)).toEqual({ stored: '99999999999999999.00', rebuilt: '99999999999999999.00', entries: 1 });
+    const replay = await post(payload);
+    expect(replay.status).toBe(422);
+    expect(replay.body).toEqual({ ...first.body, idempotentReplay: true });
+  });
+
   test('wallet inexistente: 404 WALLET_NOT_FOUND e nada persistido', async () => {
     const payload = wagerPayload({ walletId: uuid(), playerId: uuid() });
     const res = await post(payload);

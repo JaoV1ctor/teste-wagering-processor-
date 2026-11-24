@@ -1,4 +1,4 @@
-import { InsufficientBalanceError, InvalidWagerTransactionError } from './errors';
+import { InsufficientBalanceError, InvalidWagerTransactionError, MoneyOverflowError } from './errors';
 import { FailureCode } from './failure-code';
 import type { LedgerEntry } from './ledger-entry';
 import { type WagerTransaction, WagerTransactionKind } from './wager-transaction';
@@ -28,11 +28,16 @@ export function settleWager(wallet: Wallet, transaction: WagerTransaction, { ent
     case WagerTransactionKind.Loss:
       transaction.markProcessed({ observedBalance: wallet.balance, at });
       return undefined;
-    case WagerTransactionKind.Win: {
-      const entry = wallet.credit(transaction.money, posting);
-      transaction.markProcessed({ observedBalance: wallet.balance, at });
-      return entry;
-    }
+    case WagerTransactionKind.Win:
+      try {
+        const entry = wallet.credit(transaction.money, posting);
+        transaction.markProcessed({ observedBalance: wallet.balance, at });
+        return entry;
+      } catch (error) {
+        if (!(error instanceof MoneyOverflowError)) throw error;
+        transaction.reject(FailureCode.BalanceLimitExceeded, wallet.balance, at);
+        return undefined;
+      }
     case WagerTransactionKind.Bet:
       try {
         const entry = wallet.debit(transaction.money, posting);

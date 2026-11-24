@@ -1,4 +1,4 @@
-import { CurrencyMismatchError, InvalidMoneyError } from './errors';
+import { CurrencyMismatchError, InvalidMoneyError, MoneyOverflowError } from './errors';
 
 export interface MoneyProps {
   amount: string;
@@ -35,7 +35,8 @@ export class Money {
 
   static fromCents(cents: bigint, currency: string): Money {
     assertCurrency(currency);
-    if (cents < 0n || cents > MAX_CENTS) throw new InvalidMoneyError('Valor fora do intervalo de NUMERIC(19,2)');
+    if (cents < 0n) throw new InvalidMoneyError('Valor não pode ser negativo');
+    if (cents > MAX_CENTS) throw new MoneyOverflowError();
     return new Money(cents, currency);
   }
 

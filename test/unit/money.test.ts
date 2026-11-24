@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { CurrencyMismatchError, InvalidMoneyError } from '../../src/domain/errors';
+import { CurrencyMismatchError, InvalidMoneyError, MoneyOverflowError } from '../../src/domain/errors';
 import { Money } from '../../src/domain/money';
 
 describe('Money.fromString', () => {
@@ -67,6 +67,13 @@ describe('Money', () => {
   test('add não ultrapassa o máximo de NUMERIC(19,2)', () => {
     const max = Money.fromCents(10n ** 19n - 1n, 'BRL');
     expect(() => max.add(Money.fromCents(1n, 'BRL'))).toThrow(InvalidMoneyError);
+  });
+
+  test('estouro do máximo é MoneyOverflowError (distinguível de valor inválido); negativo não é', () => {
+    const max = Money.fromCents(10n ** 19n - 1n, 'BRL');
+    expect(() => max.add(Money.fromCents(1n, 'BRL'))).toThrow(MoneyOverflowError);
+    expect(() => Money.fromCents(10n ** 19n, 'BRL')).toThrow(MoneyOverflowError);
+    expect(() => Money.fromString('1', 'BRL').subtract(Money.fromString('2', 'BRL'))).not.toThrow(MoneyOverflowError);
   });
 
   test('moedas diferentes: add, subtract e comparação lançam CurrencyMismatchError', () => {

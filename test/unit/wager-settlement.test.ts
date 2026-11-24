@@ -82,6 +82,29 @@ describe('WIN', () => {
   });
 });
 
+describe('WIN que estoura o limite de NUMERIC(19,2)', () => {
+  test('REJECTED/BALANCE_LIMIT_EXCEEDED: sem lançamento, wallet intacta, saldo observado gravado (nunca vira erro 500)', () => {
+    const wallet = walletWith('99999999999999999.00');
+    const tx = transaction(wallet, WagerTransactionKind.Win, money('1.01'));
+    const entry = settle(wallet, tx);
+
+    expect(entry).toBeUndefined();
+    expect(wallet.balance.toString()).toBe('99999999999999999.00');
+    expect(wallet.version).toBe(1);
+    expect(tx.status).toBe(WagerTransactionStatus.Rejected);
+    expect(tx.failureCode).toBe(FailureCode.BalanceLimitExceeded);
+    expect(tx.observedBalance?.toString()).toBe('99999999999999999.00');
+  });
+
+  test('chegar exatamente ao limite é permitido', () => {
+    const wallet = walletWith('99999999999999999.00');
+    const tx = transaction(wallet, WagerTransactionKind.Win, money('0.99'));
+    settle(wallet, tx);
+    expect(tx.status).toBe(WagerTransactionStatus.Processed);
+    expect(wallet.balance.toString()).toBe('99999999999999999.99');
+  });
+});
+
 describe('LOSS', () => {
   test('não move saldo, não gera lançamento, não sobe version; fica PROCESSED com o saldo atual', () => {
     const wallet = walletWith('100.00');

@@ -7,6 +7,13 @@ export abstract class DomainError extends Error {
 
 export class InvalidMoneyError extends DomainError {}
 
+/** Valor acima do máximo de NUMERIC(19,2). Distinto de valor inválido: é um caminho de negócio (BALANCE_LIMIT_EXCEEDED), não bug. */
+export class MoneyOverflowError extends InvalidMoneyError {
+  constructor() {
+    super('Valor acima do máximo de NUMERIC(19,2)');
+  }
+}
+
 export class CurrencyMismatchError extends DomainError {
   constructor(expected: string, received: string) {
     super(`Moeda divergente: esperado ${expected}, recebido ${received}`);
