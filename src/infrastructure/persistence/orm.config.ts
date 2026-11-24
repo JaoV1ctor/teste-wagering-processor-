@@ -1,5 +1,7 @@
 import { defineConfig } from '@mikro-orm/postgresql';
 import { ReflectMetadataProvider } from '@mikro-orm/decorators/legacy';
+import { LedgerEntryEntity } from './ledger-entry.entity';
+import { WagerTransactionEntity } from './wager-transaction.entity';
 import { WalletEntity } from './wallet.entity';
 import { InitMigration } from '../../../db/migrations/Migration20260101000000_init';
 import { requireEnv } from '../env';
@@ -8,7 +10,7 @@ export function createOrmConfig() {
   return defineConfig({
     clientUrl: requireEnv('DATABASE_URL'),
     metadataProvider: ReflectMetadataProvider,
-    entities: [WalletEntity],
+    entities: [WalletEntity, WagerTransactionEntity, LedgerEntryEntity],
     migrations: {
       // Lista explícita: sem descoberta por glob (funciona igual em Bun/TS sem build).
       migrationsList: [{ name: 'Migration20260101000000_init', class: InitMigration }],

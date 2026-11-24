@@ -271,7 +271,6 @@ describe('CORRIDAS REAIS (conexões paralelas)', () => {
         const s = await snapshot(w); consistent &&= s.rebuilt === s.balance;
       }
       report[label] = { dead, procs, consistent };
-      console.log(`  ${label}: deadlocks=${dead}  processadas=${procs}/30 esperadas por rodada(10)  consistente=${consistent}`);
     }
     const regra = report['REGRA        lock -> insert (FOR UPDATE) ']!;
     expect(regra.dead).toBe(0);
