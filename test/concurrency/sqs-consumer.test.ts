@@ -121,6 +121,62 @@ describe('#5 worker morre depois do commit e antes do ack', () => {
   });
 });
 
+describe('#5b worker morre ANTES do commit (processo real, SIGKILL)', () => {
+  test('o ack não aconteceu, a transação abortou com a conexão e a mensagem é reentregue e processada uma única vez', async () => {
+    const queues = await newQueues(client);
+    const wallet = await newWallet('100.00');
+    // O teste segura o lock da wallet: o filho recebe a mensagem e fica DENTRO da transação, esperando o lock. Nesse instante, morre.
+    const holder = await probe.connect();
+    await holder.query('BEGIN');
+    await holder.query('select id from wallets where id = $1 for no key update', [wallet.id]);
+    const child = Bun.spawn([process.execPath, 'test/support/consumer-child.ts'], {
+      env: { ...process.env, SQS_WAGER_QUEUE_NAME: queues.names.queueName, SQS_WAGER_DLQ_NAME: queues.names.deadLetterQueueName },
+      stdout: 'pipe', stderr: 'inherit',
+    });
+    try {
+      const reader = child.stdout.getReader();
+      let output = '';
+      while (!output.includes('READY')) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error('o processo filho terminou antes de ficar pronto');
+        output += new TextDecoder().decode(value);
+      }
+      const message = await sendWager(client, queues, wallet, { amount: '30.00' });
+      await waitFor('filho dentro da transação, esperando o lock da wallet', async () => {
+        const { rows } = await probe.query("select 1 from pg_stat_activity where wait_event_type = 'Lock' and query ilike '%wallets%'");
+        return rows.length > 0;
+      });
+
+      child.kill('SIGKILL');
+      await child.exited;
+      await holder.query('ROLLBACK');
+
+      // Nada commitou e nada foi confirmado: a mensagem continua na fila (em voo até a visibilidade vencer).
+      expect(await transactionCount(message.data.externalTransactionId)).toBe(0);
+      expect(await ledgerBalance(probe, wallet.id)).toEqual({ stored: '100.00', rebuilt: '100.00', entries: 1 });
+      expect(await isQueueEmpty(client, queues.mainUrl)).toBe(false);
+
+      const survivor = new RecordingProcessor(uow);
+      const { consumer } = createTestConsumer({ queue: new SqsMessageQueue(client, queues.names), processor: survivor });
+      consumer.start();
+      try {
+        await waitFor('mensagem reentregue e confirmada', () => isQueueEmpty(client, queues.mainUrl), 30_000);
+      } finally {
+        await consumer.stop();
+      }
+
+      expect(survivor.outcomes).toHaveLength(1);
+      expect(survivor.outcomes[0]).toMatchObject({ idempotentReplay: false }); // 1º processamento de verdade: o filho não commitou nada
+      expect(await transactionCount(message.data.externalTransactionId)).toBe(1);
+      expect(await ledgerBalance(probe, wallet.id)).toEqual({ stored: '70.00', rebuilt: '70.00', entries: 2 });
+      expect(await isQueueEmpty(client, queues.dlqUrl)).toBe(true);
+    } finally {
+      child.kill('SIGKILL');
+      holder.release();
+    }
+  });
+});
+
 describe('consumidores concorrentes (2 instâncias, cada uma com o próprio pool)', () => {
   test('mensagens, duplicatas e redeliveries disputadas por 2 consumidores: cada efeito acontece exatamente uma vez', async () => {
     const queues = await newQueues(client);
