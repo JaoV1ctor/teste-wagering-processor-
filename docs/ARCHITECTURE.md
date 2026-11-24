@@ -275,7 +275,7 @@ Replay e conflito são separados por `payloadHash`.
 `payloadHash` = SHA-256 (hex) do **JSON canônico** (chaves ordenadas recursivamente, sem espaços) de
 `{providerId, externalTransactionId, playerId, walletId, roundId, gameId, kind, money: {amount, currency}}`.
 `amount` já vem normalizado com 2 casas por `Money.toProps()`. A `Idempotency-Key` e metadados de transporte ficam fora. O algoritmo tem teste com vetor fixo calculado fora do código (`payload-hash.test.ts`).
-`referenceExternalTransactionId` ainda não entra no hash porque é rejeitado nesta fase; a Fase 3 o incluirá.
+`referenceExternalTransactionId` não entrava no hash na Fase 2, porque era rejeitado; a Fase 3 o inclui quando presente (ver "Fase 3").
 
 Corridas da mesma chave: na **mesma wallet**, o lock as serializa e a 2ª encontra a chave já commitada (replay). Em **wallets diferentes**, o índice único faz a 2ª inserção esperar o commit da 1ª,
 retornar sem linha e reler: o hash difere (a wallet está no hash), então 409; coberto em `process-wager-transaction.test.ts`. Não há deadlock: quem espera no índice só segura a própria wallet, e quem o segura não precisa dela.
@@ -295,7 +295,7 @@ O callback de `uow.run` é reexecutável porque não tem efeito fora do banco (o
 - `balance` na resposta é o `observed_balance`: saldo após a operação em `PROCESSED`, saldo visto na decisão em `REJECTED`. Replay devolve o mesmo valor (SPEC §3.2).
 - Replay de `REJECTED` devolve 422 e o mesmo `failureCode`; replay de `PROCESSED`, 201. Mapeamento HTTP: 201 processada, 422 rejeitada (e `FAILED`, ainda inalcançável), 202 aguardando referência (Fase 3).
 - A `Idempotency-Key` é obrigatória (1 a 255 caracteres). O formato `{providerId}:{externalTransactionId}` é a recomendação do README, não uma exigência: o valor enviado é a fonte da verdade.
-- **Fora desta fase, 400:** `kind` `OPENING` (interno), `REFUND` e `ROLLBACK`, e qualquer `referenceExternalTransactionId`, inclusive em `WIN`/`LOSS`. A resolução de referência é da Fase 3; aceitar o campo sem resolvê-lo daria ao provedor a falsa impressão de que foi validado.
+- **Na Fase 2, 400:** `kind` `OPENING` (interno), `REFUND` e `ROLLBACK`, e qualquer `referenceExternalTransactionId`, para não aceitar o campo sem resolvê-lo. **Superado na Fase 3**: `REFUND`, `ROLLBACK` e a referência são aceitos e resolvidos; `OPENING` continua `400`.
 - O cabeçalho é validado no controller porque o Nest não aplica pipes a `@Headers`; o corpo e os parâmetros usam `ZodValidationPipe`.
 
 ### Verificação
@@ -311,8 +311,150 @@ Controle negativo: trocando `lockWallet` por uma leitura sem lock, 4 dos 5 teste
 
 ### Limitações e pontos em aberto
 
-- Wallet muito quente serializa: não há `lock_timeout` nem `statement_timeout` configurados, e requisições aguardando o lock seguram uma conexão do pool do driver. Sob carga muito maior que o pool, o limite efetivo é o pool; medir e dimensionar fica para o teste de carga (bônus).
-- `em.execute` interpola no cliente (ver acima). Um `WIN` que levaria o saldo acima do limite de `NUMERIC(19,2)` lança `InvalidMoneyError`, tratado como bug (500), e nada é gravado.
+- Wallet muito quente serializa, e requisições aguardando o lock seguram uma conexão do pool do driver. Sob carga muito maior que o pool, o limite efetivo é o pool; medir e dimensionar fica para o teste de carga (bônus). **A Fase 3 acrescentou `lock_timeout`** (espera por lock vencida vira `503`); `statement_timeout` continua sem configuração.
+- `em.execute` interpola no cliente (ver acima). Na Fase 2, um `WIN` que levaria o saldo acima do limite de `NUMERIC(19,2)` virava `500`. **Corrigido na Fase 3**: `REJECTED/BALANCE_LIMIT_EXCEEDED` (422).
 - O `providerId` `internal` não é reservado; só colidiria com identidades `opening:{walletId}`, e o `UNIQUE` já barra a colisão.
 - Os eventos do outbox (Fase 5) ainda não existem: hoje nada é publicado, então a regra "nunca publicar antes do commit" vale por construção. O outbox entrará como último passo da mesma transação.
 - Métricas de conflito de lock e de duração (`wager_lock_conflicts_total`, `wager_wallet_lock_wait_seconds`) e logs estruturados com `correlationId` são da Fase 6.
+
+---
+
+## Fase 3 — REFUND, ROLLBACK, PENDING_REFERENCE e worker
+
+**Objetivo.** Aceitar `REFUND` e `ROLLBACK` em `POST /wagering/transactions`, resolver a referência a transações anteriores, tratar referência
+ausente como `PENDING_REFERENCE` e reprocessá-la por um worker agendado, mantendo a invariante `wallet.balance == saldo do ledger` com N instâncias.
+O mesmo `ProcessWagerTransactionUseCase` serve a submissão; o worker usa a **mesma** função de liquidação (`settleLocked` → `settleWager`), então há uma só regra.
+
+### Fluxo
+
+```
+Submissão (HTTP; SQS na Fase 4)                         Worker (runOnce)
+1. fast-path por idempotency_key (replay/409)           1. CLAIM (transação curta, sem wallet):
+2. BEGIN; set_config('lock_timeout', '3000ms', true)       WITH due AS (SELECT ... WHERE status='PENDING_REFERENCE'
+3. LOCK wallet (FOR NO KEY UPDATE)  <- 1ª instrução          AND next_attempt_at <= now ORDER BY next_attempt_at
+4. settleLocked: lê a referência por                         LIMIT n FOR UPDATE SKIP LOCKED)
+   (providerId, referenceExternalTransactionId)             UPDATE ... SET next_attempt_at = now + lease RETURNING id, wallet_id
+   e se já existe reversão efetiva; domínio decide      2. por transação: BEGIN; lock_timeout
+5. INSERT da transação, já no estado final              3. LOCK wallet (FOR NO KEY UPDATE)   <- wallet primeiro
+   (PROCESSED | REJECTED | PENDING_REFERENCE)           4. relê a transação; se não é PENDING_REFERENCE, pula
+6. se mudou saldo: UPDATE wallets -> INSERT ledger      5. settleLocked (mesma regra da submissão)
+7. COMMIT; responde 201 | 422 | 202                     6. UPDATE da transação -> UPDATE wallets -> INSERT ledger; COMMIT
+```
+
+Ordem global de locks mantida: **wallet → transação → ledger → outbox**. O claim não toca a wallet e termina antes do reprocesso, então não participa da ordem.
+`pending-reference-lock-order.test.ts` lê o SQL emitido e afirma: o reprocesso é `begin`, `set_config`, **lock da wallet**, `update` da transação, `update` da wallet, `insert` do ledger, `commit`;
+a transação só é relida **depois** do lock; o claim usa `FOR UPDATE SKIP LOCKED` e não menciona wallet nem ledger.
+
+### Regras de reversão (README §7) e códigos (SPEC §5.1)
+
+A primeira violação decide, nesta ordem (testada em `wager-settlement-reversal.test.ts`):
+
+| # | Verificação | Falha | Teste de ponta a ponta |
+| --- | --- | --- | --- |
+| 1 | `playerId` ≠ dono da wallet; moeda ≠ moeda da wallet | `PLAYER_MISMATCH`, `CURRENCY_MISMATCH` | `reversals-http` (regra 2) |
+| 2 | Referência ausente **ou ela própria `PENDING_REFERENCE`** | espera (`202`); esgotado, `REFERENCE_NOT_FOUND` | regra 8; `pending-reference-worker` |
+| 3 | Referência de outro player, wallet, rodada ou moeda | `REFERENCE_MISMATCH` | regra 2 |
+| 4 | Tipo não referenciável: `REFUND` só `BET`; `ROLLBACK` `BET`/`WIN`/`REFUND` (inclui `ROLLBACK` de `ROLLBACK`) | `INVALID_REFERENCE_KIND` | regra 3 |
+| 5 | Referência `REJECTED` ou `FAILED` | `REFERENCE_NOT_PROCESSED` | regra 3 |
+| 6 | Valor ≠ valor da referência (sem reversão parcial) | `AMOUNT_MISMATCH` | regra 5 |
+| 7 | Já existe reversão **efetiva** da referência | `ALREADY_REVERSED` | regra 4 |
+| 8 | Débito sem saldo (`ROLLBACK` de `WIN`/`REFUND`) | `REVERSAL_WOULD_OVERDRAW` (≠ `INSUFFICIENT_BALANCE`) | regra 9 |
+| 9 | Crédito acima de `NUMERIC(19,2)` | `BALANCE_LIMIT_EXCEEDED` | regra 9 |
+
+A referência é resolvida por `(providerId, referenceExternalTransactionId)`: o mesmo id externo em **outro** provedor não é a referência (a reversão fica `PENDING_REFERENCE`).
+`ROLLBACK` é o inverso da referência: reverter `BET` credita; reverter `WIN` ou `REFUND` debita (`ledgerDirectionFor`).
+Toda rejeição é gravada (auditável), não altera saldo nem `version` e não gera ledger; replay devolve o mesmo 422 e o mesmo `failureCode`.
+HTTP: `201` processada, `202` `PENDING_REFERENCE`, `422` rejeição, tanto na 1ª vez quanto no replay (que acrescenta `idempotentReplay: true`).
+
+### Interpretação: "uma reversão efetiva por transação referenciada" (SPEC §3.1)
+
+O README (regra 4) diz que uma referência não pode ser revertida duas vezes "pelo mesmo tipo de operação". Lida ao pé da letra, permitiria `REFUND` **e** `ROLLBACK` da mesma `BET`,
+creditando o valor em dobro. Adotamos a leitura que preserva a invariante financeira: **no máximo uma reversão efetiva (`REFUND` ou `ROLLBACK` `PROCESSED`) por transação referenciada**.
+Uma reversão `REJECTED` não conta (o provedor pode corrigir e reenviar). Consequência assumida: se uma `BET` foi revertida por um `REFUND` e esse `REFUND` foi depois desfeito por um `ROLLBACK`,
+a `BET` continua tendo uma reversão efetiva e **não pode** ser revertida de novo; a operação corretiva é de suporte, não do fluxo normal.
+
+A garantia tem duas camadas independentes: a verificação sob o lock da wallet (`hasEffectiveReversal`, que devolve `ALREADY_REVERSED` limpo) e o **índice único parcial**
+`wt_one_effective_reversal_uq` no schema, que barra o crédito duplicado mesmo que a aplicação erre.
+
+### Outras interpretações desta fase (além da SPEC §3)
+
+- `WIN`/`LOSS` com `referenceExternalTransactionId` (SPEC §3.4): a referência só pode ser uma `BET` (`INVALID_REFERENCE_KIND` caso contrário), `PROCESSED` e da mesma identidade; o valor **não** precisa coincidir (um prêmio não é igual à aposta). O campo entra no `payloadHash` quando presente; ausente, a chave some do JSON canônico e os hashes gravados antes continuam válidos (há vetor fixo de teste para os dois casos).
+- Referência que existe mas ainda está `PENDING_REFERENCE` (por exemplo `ROLLBACK` de uma `WIN` que espera a `BET`): a reversão espera também. Rejeitar aí puniria o provedor por uma desordem que o próprio worker vai resolver.
+- `referenceExternalTransactionId` igual ao próprio `externalTransactionId`: `400` na borda (espelha o CHECK `wt_not_self_reference`); em `BET`, `400`; em `REFUND`/`ROLLBACK`, ausente, `400`.
+- Replay de uma transação que estava `PENDING_REFERENCE` devolve o **estado atual** da transação: `202` enquanto pendente; depois de resolvida, `201`/`422` com o `balance` observado na resolução (a SPEC §3.7 só fixa o caso "ainda pendente").
+- Reversão cuja referência está em **outra wallet** do mesmo provedor é `REFERENCE_MISMATCH`: lemos a referência sem lock, o que é seguro porque só importam campos imutáveis para decidir o mismatch.
+- A referência da **mesma** wallet é lida sem `FOR UPDATE` porque só muda sob o lock desta wallet, que já seguramos.
+- **`BALANCE_LIMIT_EXCEEDED` é um código acrescentado à taxonomia da SPEC §5.1**, que não tinha código para crédito acima do máximo de `NUMERIC(19,2)`. Antes, `WIN`/`REFUND`/`ROLLBACK` nesse caso viravam `500`, e um provedor não deve provocar `500` com valor válido. Agora é `REJECTED`/`422`, sem ledger, auditável, e o replay devolve o mesmo resultado. Ação do provedor: não reenviar; a operação escala. Não exige mudança de schema (`failure_code` é `text`). `MoneyOverflowError` distingue o estouro de um valor inválido.
+
+### PENDING_REFERENCE e o worker
+
+**Estado.** Referência ausente grava a transação como `PENDING_REFERENCE` (sem tocar saldo nem ledger), `attempts = 1`, `next_attempt_at = agora + 1s (+ jitter)`, e responde `202`.
+`attempts` conta as avaliações sem sucesso, incluindo a da submissão. A transição `PENDING_REFERENCE → PENDING` é impossível em duas camadas: o trigger `wager_transactions_guard` e o domínio
+(`PENDING` só existe em `WagerTransaction.create`; não há método que o reponha; `wager-transaction.test.ts` percorre todas as transições a partir de `PENDING_REFERENCE`).
+
+**Claim por lease (SPEC D7).** `UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED LIMIT n) RETURNING` empurra `next_attempt_at` para `agora + 30s`. Dois workers recebem lotes disjuntos
+(`SKIP LOCKED`); a transação reivindicada some do filtro até o lease vencer, então ninguém a pega em dobro. Se o worker morrer, ela volta a ser elegível quando o lease vencer
+(teste `o claim agenda a transação para depois do lease`). O processamento roda **fora** do claim, como transação normal: não segura conexão nem lock durante o trabalho de outro.
+Defesa em profundidade se dois workers chegarem à mesma transação: o lock da wallet serializa, o 2º relê e vê que não é mais `PENDING_REFERENCE` (`skipped`), e o trigger barra qualquer UPDATE em terminal.
+
+**Limite e backoff (estimativa a justificar).** 1 avaliação inicial + **8 reprocessamentos**; a espera antes do reprocesso `n` é `min(60s, 1s · 2ⁿ⁻¹)` mais jitter uniforme de 0 a +50%:
+
+| Após a avaliação nº | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Espera até a próxima (sem jitter) | 1s | 2s | 4s | 8s | 16s | 32s | 60s (teto) | 60s |
+
+A 9ª avaliação, se ainda sem referência, grava `REJECTED/REFERENCE_NOT_FOUND` (com o saldo observado). Total sem jitter: **183 s**; com jitter, de 3 a ~4,5 min.
+Justificativa: desordem real entre `BET` e reversão costuma ser de milissegundos a poucos segundos (reenvio do provedor, atraso de fila), então as primeiras esperas curtas resolvem o caso comum quase de imediato;
+o teto de 60 s limita a carga do polling a no máximo uma reavaliação por minuto por transação parada; o jitter espalha reprocessos que nasceram juntos (uma rajada pós-incidente) para não voltarem todos no mesmo instante;
+alguns minutos cobrem atraso de fila e um ciclo de retry do provedor sem manter uma transação indefinidamente em aberto. Os números são estimativas, não medições: constantes em `domain/reference-retry-policy.ts` (não são configuráveis em runtime).
+Custo assumido: uma referência que chegue depois desse prazo leva à rejeição e o provedor precisa enviar a referência e uma **nova** reversão (SPEC §5.1), em vez de a antiga ser retomada.
+A referência que aparece na última tentativa ainda resolve: o limite só rejeita quando a avaliação continua sem referência.
+
+**Execução.** `ReprocessPendingReferencesUseCase.runOnce()` é uma passada testável (devolve `{claimed, processed, rejected, rescheduled, skipped, failed}`); `PendingReferenceWorker` agenda passadas
+(1 s entre passadas, lote de 20, repete sem esperar se o lote veio cheio) e **nunca sobrepõe** passadas na mesma instância. Sobe no `main.ts` (todas as instâncias rodam o loop; o claim divide o trabalho sem coordenação)
+e para no shutdown: `AppModule.beforeApplicationShutdown` chama `stop()`, que espera a passada em andamento terminar antes de o ORM fechar. Os testes sobem o módulo **sem** o loop, para controlarem o tempo com um relógio injetado.
+Uma falha em uma transação não derruba o lote: vai para `onError` (log JSON com ids e nome/mensagem do erro, sem payload), conta em `failed` e a transação fica `PENDING_REFERENCE`, elegível de novo quando o lease vencer.
+`onError` é parâmetro obrigatório do caso de uso e do loop, para que nenhuma falha seja engolida por omissão.
+
+### Ajustes da Fase 2 incorporados
+
+**`lock_timeout` (substitui a limitação da Fase 2).** Cada transação do `UnitOfWork.run` começa com `select set_config('lock_timeout', '3000ms', true)`, o equivalente parametrizável de `SET LOCAL`:
+vale só naquela transação e não vaza para a conexão devolvida ao pool (teste com pool de 1 conexão). Roda **antes** do lock da wallet e não toca tabela, então a ordem de locks é a mesma.
+Estourar o prazo é o SQLSTATE `55P03`, tratado como transitório: o `UnitOfWork` reexecuta (3 tentativas, jitter) e, esgotado, responde `503` + `Retry-After: 1`; o provedor pode reenviar a mesma chave.
+**Por que 3 s:** o lock da wallet dura uma transação curta (lock, 1 insert, 1 update, 1 insert, commit: dezenas de milissegundos, sem I/O de rede dentro dela), então 3 s é ~100 vezes a espera normal:
+se estourou, há transação travada, não fila. Com 3 tentativas o pior caso é ~9 s, abaixo de um timeout típico de gateway (10 s), de modo que o provedor recebe um `503` em vez de uma conexão pendurada ocupando o pool.
+É uma estimativa, não uma medição; ajustável por `LOCK_TIMEOUT_MS`. Uma wallet muito quente com fila maior que 3 s de trabalho veria `503`s, comportamento desejado (contrapressão), mas o dimensionamento fica para o teste de carga.
+Teste: outra conexão segura o lock da wallet; a submissão falha com `TransientInfrastructureError` (causa `55P03`) em ≥ `lock_timeout` e < 5 s, nada persiste, e o reenvio depois de liberado dá `201`; pela API, `503` com `Retry-After`.
+
+**`walletId` validado antes de chegar ao lock.** O corpo usa `z.uuid()` para `walletId` e `playerId` e o controller só chama o caso de uso com o corpo já validado. `walletId` malformado
+(`nao-e-uuid`, truncado, com SQL anexado) é `400 VALIDATION_ERROR` e nada é gravado: o Postgres nunca vê o valor (sem `22P02` virando `500`). Teste: `wagering-http.test.ts`.
+A Fase 4 deve reutilizar o mesmo schema ao validar a mensagem do SQS.
+
+### Verificação
+
+| Camada | Arquivos | O que prova |
+| --- | --- | --- |
+| Unidade | `reference-retry-policy`, `wager-settlement-reversal`, `wager-settlement`, `wager-transaction`, `wagering-dto`, `payload-hash`, `pending-reference-worker` | Cada regra e cada código, a precedência, os efeitos no saldo, o backoff e o limite, a máquina de estados, o DTO, o hash com e sem referência, o loop (start/stop, erro, lote cheio) |
+| Integração (Postgres real) | `reversals-http`, `pending-reference-worker`, `pending-reference-lock-order`, `pending-reference-claim`, `wager-repositories`, `lock-timeout`, `wagering-http` | Regras 1 a 9 do README pela API; cenário #7; limite esgotado; replay de pendente e de rejeitada; lease e recuperação; falha isolada por transação; ordem de locks; `lock_timeout`; claim disjunto |
+| Concorrência (Postgres real, processos reais) | `test/concurrency/reversals.test.ts` | `REFUND` e `ROLLBACK` da mesma `BET` (20 rodadas): 1 efetiva e 1 `ALREADY_REVERSED`; 25+25 reversões da mesma `BET`: 1 efetiva e 49 `ALREADY_REVERSED`; mesmo `REFUND` x50: 1 crédito, 49 replays; 3 **processos** disputando 30 pendências: 30 reivindicadas uma única vez, 30 créditos; worker e HTTP na mesma wallet |
+
+Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) em todos os cenários que mexem em saldo. Nenhum teste mocka PostgreSQL; a falha por transação do worker é injetada trocando `lockWallet` num `UnitOfWork` que ainda usa o banco real.
+
+**Controle negativo** (em um banco descartável, para não alterar o schema compartilhado):
+
+| Alteração | Resultado |
+| --- | --- |
+| `lockWallet` sem `FOR NO KEY UPDATE` | 5 dos 6 testes de `reversals.test.ts` falham. A reversão concorrente devolve `[201, 500]` em vez de `[201, 422]`: o banco impede o crédito duplicado (trigger de cadeia do ledger e índice), mas como erro, não como `ALREADY_REVERSED`. O lock é o que transforma a corrida em resultado de negócio. |
+| Sem o índice `wt_one_effective_reversal_uq` (lock intacto) | `schema.test.ts` falha em "REFUND + ROLLBACK efetivos na mesma BET (crédito duplicado)"; os testes de concorrência **passam**, porque a verificação sob o lock da aplicação também segura. Por isso o índice só aparece nos testes do schema: prova que a 2ª camada existe. |
+| Sem o índice **e** sem o lock | 3 dos 4 testes de reversões concorrentes falham. |
+
+### Limitações e pontos em aberto
+
+- Os eventos de outbox (`WagerTransactionPendingReference`, `WagerTransactionRejected`, `WalletBalanceChanged`) ainda não existem: Fase 5. A atomicidade com o outbox entrará no mesmo `uow.run`, como último passo.
+- O limite do worker é constante no domínio, não configurável. Medir o atraso real de referências (histograma) permitiria ajustá-lo com dados; fica para a Fase 6.
+- O worker processa o lote em sequência. Uma wallet travada atrasa o lote por até ~9 s (3 tentativas de `lock_timeout`); a transação afetada volta após o lease, e as demais seguem. Paralelizar por wallet é possível e não foi necessário.
+- Sem ordem garantida entre pendências da mesma wallet: duas reversões pendentes da mesma `BET` são avaliadas na ordem do claim (`next_attempt_at`); qualquer uma pode ser a efetiva, e a outra é `ALREADY_REVERSED`. A regra "no máximo uma" vale; qual delas vence não é especificado.
+- Agendamento e lease usam o relógio da aplicação. Entre instâncias, um desvio de relógio desloca os vencimentos em segundos, o que não afeta correção (a exclusão mútua é do lock e do claim, não do relógio).
+- `GET` de uma transação `PENDING_REFERENCE` devolve `balance: null` (não há saldo observado ainda).
+- O log do worker é o mínimo da Fase 3 (JSON de uma linha em stdout/stderr); `correlationId`, métricas de pendências e de lag entram na Fase 6.
+- Se a referência nunca chegar, a linha vira `REJECTED` em ~4 min: a tabela não acumula pendências eternas, mas o provedor precisa reagir ao `REFERENCE_NOT_FOUND`.
