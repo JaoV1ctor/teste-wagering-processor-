@@ -458,3 +458,118 @@ Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) em todos 
 - `GET` de uma transação `PENDING_REFERENCE` devolve `balance: null` (não há saldo observado ainda).
 - O log do worker é o mínimo da Fase 3 (JSON de uma linha em stdout/stderr); `correlationId`, métricas de pendências e de lag entram na Fase 6.
 - Se a referência nunca chegar, a linha vira `REJECTED` em ~4 min: a tabela não acumula pendências eternas, mas o provedor precisa reagir ao `REFERENCE_NOT_FOUND`.
+
+
+---
+
+## Fase 4 — Consumidor SQS, inbox, DLQ e shutdown
+
+**Objetivo.** Processar `WagerTransactionRequested` vindo de `wager-transactions.fifo` com o **mesmo** `ProcessWagerTransactionUseCase` do HTTP,
+correto sob duplicação, redelivery, queda de worker e várias instâncias (README §10, SPEC §6 e §8.1).
+
+### Fluxo de uma mensagem
+
+```
+ReceiveMessage (long polling 20 s, lote <= 10, VisibilityTimeout configurável)
+  └─ despacho por MessageGroupId (= walletId): grupos diferentes em paralelo (limite SQS_CONSUMER_CONCURRENCY); o mesmo grupo encadeado
+       └─ WagerMessageHandler.handle(body, ApproximateReceiveCount)
+            1. parseWagerMessage (zod): envelope + data. type desconhecido ou payload inválido => erro PERMANENTE
+            2. ProcessWagerTransactionUseCase.execute(command, { consumerName, messageId })
+                 fast-path por idempotencyKey (sem lock) -> replay
+                 BEGIN
+                   INSERT inbox (consumer_name, message_id) ON CONFLICT DO NOTHING   <- mesma transação do dinheiro
+                     já existe, mesmo hash  => COMMIT, resultado `duplicateMessage`
+                     já existe, hash outro  => InboxPayloadConflictError (permanente)
+                   lock da wallet -> transação -> saldo -> ledger        (ordem de locks da Fase 2, inalterada)
+                   UPDATE inbox.processed_at
+                 COMMIT
+            3. devolve uma Disposition: ack | retry(delaySeconds) | dead-letter(reason)
+  └─ QueueConsumer executa a Disposition:
+       ack          -> DeleteMessage
+       retry        -> ChangeMessageVisibility(delaySeconds); sem ack
+       dead-letter  -> SendMessage à DLQ (MessageGroupId, MessageDeduplicationId, atributo FailureReason) e SÓ ENTÃO DeleteMessage
+```
+
+O `ack` acontece depois de `handle` resolver, e `handle` só resolve depois do commit. O inbox entra **antes** do lock da wallet (SPEC §6 passo 3): não toca a wallet,
+então não altera a ordem `wallet → transação → ledger`, e duas entregas concorrentes da mesma mensagem se serializam no índice único do inbox.
+
+### Classificação de erros (SPEC §8.1)
+
+| Classe | O que é | O que o consumidor faz |
+| --- | --- | --- |
+| **Negócio** | `PROCESSED`, `REJECTED` (ex.: `INSUFFICIENT_BALANCE`), `PENDING_REFERENCE`, replay por idempotência, duplicata do inbox | O commit já gravou o resultado: **ack**. Não vai à DLQ. |
+| **Transitório** | `TransientInfrastructureError`: Postgres fora, `40P01`, `40001`, `55P03`, retry interno esgotado | **Sem ack.** `ChangeMessageVisibility` com `min(teto, base · 2^(n-1))` e jitter "equal" (entre metade e o valor inteiro), `n = ApproximateReceiveCount`. No 5º recebimento sem sucesso o **SQS** move a mensagem para a DLQ (`maxReceiveCount = 5`, redrive da fila). |
+| **Permanente** | Corpo que não é JSON, envelope/`data` inválido, `type` desconhecido, `messageId` reutilizado com outro conteúdo, conflito de idempotência, wallet inexistente, erro inesperado (bug) | Envia **explicitamente** à DLQ (mesmo `MessageGroupId`, `MessageDeduplicationId` = MessageId do SQS, atributo `FailureReason`) e **depois** dá ack. |
+
+Códigos de `FailureReason`: `MALFORMED_MESSAGE`, `UNKNOWN_MESSAGE_TYPE`, `INBOX_PAYLOAD_CONFLICT`, `IDEMPOTENCY_CONFLICT`, `WALLET_NOT_FOUND`, `UNEXPECTED_ERROR`.
+
+**Decisões que divergem de uma leitura literal do enunciado (e por quê):**
+
+- **`409` (conflito de idempotência) e wallet inexistente (`404`) são permanentes, não "negócio".** Diferente de `REJECTED`, nada é gravado: não há transação nem linha de inbox.
+  Dar ack apagaria a mensagem sem deixar rastro, e no SQS não existe resposta HTTP para avisar o produtor. A DLQ é o único registro auditável.
+- **`FAILED / INTERNAL_PERMANENT_ERROR` não é gravado.** Exigiria uma wallet existente (FK) e uma segunda transação SQL no caminho de erro; pior, uma transação `FAILED` é terminal e
+  ocuparia a `idempotencyKey` para sempre, de modo que, corrigido o bug, o reenvio do provedor devolveria `FAILED` em vez de processar. A trilha de auditoria desses casos é a DLQ com `FailureReason`.
+- **Mesmo `messageId` com `payload_hash` diferente é permanente.** Uma reentrega do SQS nunca muda o corpo; se mudou, o produtor reutilizou o id e não há como saber qual conteúdo vale.
+  Processar de novo seria arriscado e descartar em silêncio esconderia o erro. O `payload_hash` do inbox é o mesmo hash de negócio do `WagerTransaction` (sem a chave de idempotência, que é metadado).
+- **Erro inesperado é permanente na primeira ocorrência.** Retentar um bug só repete o bug; a DLQ preserva a mensagem para reprocesso manual depois da correção.
+  Custo assumido: uma falha transitória que o código não reconhece como tal (SQLSTATE fora da lista de `transient-retry.ts`) vai à DLQ em vez de ser retentada.
+
+### Inbox e idempotência são camadas diferentes
+
+O fast-path por `idempotencyKey` roda antes do `BEGIN` (SPEC §6 passo 1), então uma redelivery depois do commit normalmente vira **replay** sem tocar o inbox.
+O inbox é o que decide quando a chave de idempotência **não** acerta: mesma mensagem reenviada com outra chave, conteúdo diferente sob o mesmo `messageId`, ou duas entregas concorrentes
+(o `INSERT ... ON CONFLICT` espera o commit da primeira). Em outras palavras: remover o inbox **não** duplica o débito (a idempotência segura), mas quebra a deduplicação por mensagem, a detecção de
+`messageId` reutilizado e a atomicidade inbox + transação; os testes pegam isso (controle negativo abaixo). `processed_at` é gravado por `UPDATE` no fim da mesma transação.
+
+### Concorrência dentro do processo
+
+`QueueConsumer` mantém `concurrency` mensagens em voo. Mensagens de **grupos diferentes** correm em paralelo; as do **mesmo grupo** são encadeadas (uma `Promise` por `MessageGroupId`), inclusive quando o SQS
+devolve várias do mesmo grupo no mesmo lote (o MiniStack devolve, como a AWS). Isso preserva a ordem por wallet e evita disputa de lock, mas **não é garantia de correção**: entre processos,
+quem garante é o lock da wallet + inbox + idempotência no banco. Nenhum estado em memória decide algo financeiro.
+
+### Shutdown (`SIGTERM`)
+
+`main.ts` chama `enableShutdownHooks()`; `AppModule.beforeApplicationShutdown` executa `Promise.all([consumer.stop(), worker.stop()])` e só depois `onApplicationShutdown` fecha o ORM.
+`QueueConsumer.stop()`: (1) aborta o long polling e para de buscar; (2) devolve **na hora**, com `ChangeMessageVisibility(0)`, as mensagens que ainda esperavam a vez do grupo;
+(3) espera as em andamento até `SHUTDOWN_TIMEOUT_MS` (25 s); (4) as que não terminaram voltam com `ChangeMessageVisibility(0)`. Mensagem devolvida que ainda termina em segundo plano não é confirmada:
+se commitar, a reentrega será replay ou duplicata do inbox. `stop()` é idempotente.
+
+### Configuração (sem valor mágico no código)
+
+Variáveis em `.env.example`: `SQS_WAGER_QUEUE_NAME` e `SQS_WAGER_DLQ_NAME` (obrigatórias; a URL é resolvida por `GetQueueUrl` na primeira chamada, então o HTTP sobe mesmo com o SQS fora),
+`SQS_CONSUMER_CONCURRENCY` (5), `SQS_BATCH_SIZE` (10), `SQS_WAIT_TIME_SECONDS` (20), `SQS_VISIBILITY_TIMEOUT_SECONDS` (30), `SQS_RETRY_BASE_SECONDS` (5), `SQS_RETRY_MAX_SECONDS` (120), `SHUTDOWN_TIMEOUT_MS` (25000).
+Os padrões são constantes nomeadas com a justificativa em `consumer-config.ts` e são validados no boot (lote > 10, espera > 20 s, teto < base derrubam o start). São estimativas, não medições:
+com `maxReceiveCount = 5` o backoff soma ~1 min (5 + 10 + 20 + 40 s, sem jitter) antes da DLQ, tempo para cobrir um reinício de Postgres.
+
+### Teste sem hook de produção
+
+O código de produção não tem ponto de falha injetável. O consumidor recebe a fila pela porta `MessageQueue` (adaptador `SqsMessageQueue`); os testes embrulham o **adaptador real** num decorador
+(`InterceptingQueue`) que observa ou intercepta uma chamada, por exemplo fazer o `acknowledge` lançar para simular "o worker morreu depois do commit". Postgres e SQS são sempre reais.
+Além disso, o cenário "morre antes do commit" usa um **processo filho real** morto com `SIGKILL` dentro da transação (esperando um lock segurado pelo teste).
+
+### Verificação
+
+| Camada | Arquivos | O que prova |
+| --- | --- | --- |
+| Unidade | `inbox-message`, `wager-message` (zod), `visibility-backoff`, `wager-message-handler`, `consumer-config`, `app-shutdown` | Domínio do inbox; cada caso de payload malformado; backoff e teto; classificação ack/retry/DLQ; validação da config; ordem do encerramento |
+| Integração (Postgres + MiniStack reais) | `process-wager-inbox`, `sqs-consumer`, `sqs-app`, `send-wager-message-cli` | Inbox na mesma transação (atomicidade com falha injetada em 4 pontos, 20 entregas simultâneas); ack só após o commit; `REJECTED` com ack; duplicata, redelivery com `messageId` novo, ordem por wallet; Postgres fora (sem ack, backoff 1 s, 2 s) e 5 recebimentos até a DLQ com `MessageGroupId`; payloads inválidos, conflito e wallet inexistente na DLQ com `FailureReason`; paralelismo entre grupos com limite e serialização do grupo; shutdown devolvendo em andamento e não iniciadas; `AppModule` real; CLI produtor |
+| Concorrência | `test/concurrency/sqs-consumer.test.ts` | **#5** (ack falha depois do commit: reentrega vira replay, 1 débito, 1 inbox, ledger íntegro; também com 4 wallets); **#5b** (processo morto por `SIGKILL` antes do commit: 0 efeitos, reentrega processa 1 vez); 2 consumidores com pools próprios disputando 144 mensagens (48 fatos, duplicatas e reenvios): exatamente 48 processamentos; wallet quente com 2 consumidores: 5 `PROCESSED` e 3 `REJECTED` na ordem de envio |
+
+Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) em todos os testes que movem saldo.
+
+**Controles negativos** (mutação temporária no código, revertida):
+
+| Mutação | Resultado |
+| --- | --- |
+| `acknowledge` antes de `handle` (ack antes do commit) | Falham `ack SOMENTE depois do commit` (a transação ainda não existia no instante do ack) e **#5b** (a mensagem é apagada, o processo morre antes do commit e nada é reprocessado); falham também os testes que dependem da mensagem permanecer na fila até o commit |
+| Sem inbox (`origin` ignorado no caso de uso) | Falham 14 testes: inbox gravado, duplicata pelo inbox, `messageId` reutilizado, atomicidade do inbox, 20 entregas simultâneas, #5 (linha do inbox). **Nenhum teste mostra débito duplicado**, porque a idempotência por chave segura o dinheiro sozinha: é a defesa em profundidade que a SPEC descreve |
+
+### Limitações e o que o MiniStack não garante frente ao SQS real
+
+- **Long polling abortado ainda vive no servidor.** No shutdown abortamos o `ReceiveMessage` no cliente, mas a espera continua do lado do servidor (observado no MiniStack; é plausível que o SQS real se comporte igual, mas isso não foi verificado): uma mensagem que chegue nesses segundos pode ficar invisível até `VisibilityTimeout` vencer e depois é reentregue. Não se perde nem se duplica efeito; só atrasa.
+- **Contadores de fila.** Os testes esperam "fila vazia" por `ApproximateNumberOfMessages` / `NotVisible`. No SQS real esses contadores são aproximados e atrasados; o MiniStack os atualiza de forma imediata. Os testes não valem como estão contra a AWS.
+- **Não verificado no MiniStack:** janela de 5 minutos da deduplicação FIFO (a DLQ confia nela para não duplicar o envio quando o worker morre entre o `SendMessage` e o ack); invalidação de `ReceiptHandle` antigo depois de nova entrega (por isso uma mensagem devolvida no shutdown não é confirmada depois); cotas de mensagens em voo (120 mil em FIFO); throughput por grupo; semântica de `ChangeMessageVisibility` acima do `VisibilityTimeout` restante. O redrive para a DLQ no 6º `ReceiveMessage` (5 recebimentos sem `DeleteMessage`) foi observado.
+- **`visibilityTimeout` fixo de 30 s por recebimento.** Um processamento mais longo que isso seria reentregue enquanto roda; o `lock_timeout` de 3 s × 3 tentativas mantém o pior caso em ~9 s. Não há heartbeat que estenda a visibilidade.
+- **Mensagem devolvida no shutdown que ainda executa** pode terminar depois de `stop()` e depois do ORM fechar (se o processo continuar vivo); o resultado é seguro (commit válido ou rollback), mas gera erro nos logs. O orquestrador mata o processo logo depois.
+- **Sem métricas nem `correlationId` além do `messageId` nos logs** (Fase 6). `wager_dlq_messages_total` e `wager_retries_total` ainda não existem.
+- **Wallet criada depois da primeira mensagem** é tratada como erro permanente (`WALLET_NOT_FOUND`): a wallet só nasce por HTTP, e uma mensagem que a antecede indica problema do produtor. Se a operação quiser tolerar essa corrida, basta reprocessar a DLQ.
