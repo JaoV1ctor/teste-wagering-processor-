@@ -85,9 +85,7 @@ Também verificado: `em.execute('select ... for no key update', [id])` dentro de
 outra conexão não obtém `FOR NO KEY UPDATE` (nowait) mas **obtém** `FOR KEY SHARE`. Já o `FOR UPDATE` do ORM bloqueia até o `KEY SHARE`.
 Os dois lados estão em testes.
 
-**Escolha para a Fase 2 (decisão pendente; ver Fase 1, "Locks"):** usar `LockMode.PESSIMISTIC_WRITE` (API do ORM, `FOR UPDATE`) como **primeira instrução**.
-Alternativa: SQL parametrizado `FOR NO KEY UPDATE` via `em.execute`. O custo do `FOR UPDATE` é bloquear também quem só precisa de `KEY SHARE` (checagem de FK de um `INSERT` que referencia a wallet).
-Como toda escrita da wallet já passa pelo lock primeiro (D2), a diferença prática esperada é pequena, mas **não foi medida**.
+**Escolha para a Fase 2:** SQL `FOR NO KEY UPDATE` via `em.execute`, como primeira instrução da transação (decisão e alternativas na seção "Fase 2").
 Observação medida (3 rodadas de 30 apostas): com a ordem errada, `FOR UPDATE` deu **86–87 deadlocks**; com a ordem errada e
 `FOR NO KEY UPDATE`, **0** nesta máquina. Ou seja, o modo ameniza, mas **a ordem continua sendo a regra**: não dependemos do modo para ser correto.
 
@@ -215,5 +213,106 @@ do repositório do ledger; o banco continua real.
 - O log de erros 5xx é mínimo (tipo, mensagem e stack, nunca o corpo); o formato estruturado com `correlationId` entra na Fase 6.
 - Leituras (`GET`) não travam a wallet: devolvem o último estado commitado, o que é o esperado para consulta.
 - O banco de testes acumula linhas entre execuções (UUIDs aleatórios; sem colisão).
-- Decisão aberta para a Fase 2: lock com `LockMode.PESSIMISTIC_WRITE` (`FOR UPDATE`, API do ORM) ou SQL parametrizado `FOR NO KEY UPDATE`.
-  Em ambos a wallet é a primeira instrução da transação.
+- Lock da wallet (`FOR UPDATE` do ORM ou `FOR NO KEY UPDATE` em SQL): decidido na Fase 2.
+
+---
+
+## Fase 2 — BET/WIN/LOSS por HTTP, idempotência e lock
+
+**Objetivo.** Processar `BET`, `WIN` e `LOSS` por `POST /wagering/transactions`, com idempotência decidida pelo banco e exclusão mútua por wallet,
+e expor as consultas `GET /wagering/transactions/:transactionId` e `GET /providers/:providerId/wagering/transactions/:externalTransactionId`.
+Um único `ProcessWagerTransactionUseCase` concentra a regra; o controller só traduz entrada e saída (a Fase 4 reutiliza o mesmo caso de uso para SQS).
+
+### Fluxo (SPEC §6)
+
+```
+0. Validação na borda (zod + Money): Idempotency-Key obrigatória; kind em {BET, WIN, LOSS}; amount > 0, no máximo 2 casas
+1. payloadHash = SHA-256 do JSON canônico dos campos de negócio
+2. Fast-path SEM lock: SELECT por idempotency_key
+     existe: mesmo hash -> REPLAY (mesmo status HTTP e corpo, idempotentReplay=true) | hash diferente -> 409 IDEMPOTENCY_CONFLICT
+3. BEGIN
+4. lockWallet:  SELECT id FROM wallets WHERE id = ? FOR NO KEY UPDATE     <- primeira instrução que toca a wallet
+     inexistente -> ROLLBACK, 404 WALLET_NOT_FOUND, nada gravado
+5. Decisão em memória (domínio, settleWager): a transação nasce PENDING e termina PROCESSED ou REJECTED(code), com observed_balance
+6. INSERT wager_transactions ... ON CONFLICT (idempotency_key) DO NOTHING RETURNING id        <- gravada UMA vez, já no estado final
+     sem linha retornada: a chave já existia -> relê o vencedor: mesmo hash -> REPLAY | diferente -> 409
+     violação de wt_external_id_uq (mesmo provedor+id externo, outra chave) -> 23505 -> 409
+7. Se o saldo mudou (BET/WIN processadas): UPDATE wallets (balance, version+1) -> INSERT wallet_ledger_entries
+8. COMMIT; só então responde
+```
+
+Ordem global de locks e escritas: **wallet → transação → ledger → outbox** (o outbox entra na Fase 5, como último passo). `test/integration/process-wager-lock-order.test.ts`
+lê o SQL emitido ao Postgres real e afirma: `begin`, depois o lock da wallet como 1ª instrução, depois `insert` da transação (um só, nenhum `update` de `wager_transactions`),
+`update wallets`, `insert` do ledger e `commit`; em rejeição e em `LOSS` não há `update` de wallet nem ledger.
+
+### Decisões
+
+**1. Lock: `FOR NO KEY UPDATE` em SQL, isolado em `WalletRepository.lockWallet`.**
+É o único ponto do código que trava wallet. O método trava com `select id ... for no key update` e, em seguida, relê a wallet pelo ORM: em `READ COMMITTED`
+a leitura seguinte já enxerga o commit de quem segurava o lock, e ninguém altera a linha até o fim da transação. (A leitura crua do driver devolve `timestamptz` como
+string; reler pelo ORM reaproveita o mapper e as conversões de tipo.) `saveBalance` só é chamado depois, na mesma transação.
+
+| Alternativa | Por que não |
+| --- | --- |
+| `LockMode.PESSIMISTIC_WRITE` do MikroORM (`FOR UPDATE`) | Funciona se for a 1ª instrução (provado na Fase 0), mas `FOR UPDATE` conflita com `FOR KEY SHARE`, o lock que o Postgres toma na linha referenciada por FK quando outra transação insere em `wager_transactions` ou no ledger. `FOR NO KEY UPDATE` serializa os escritores da wallet do mesmo jeito e deixa passar essas checagens de FK. É também o modo que o trigger do ledger usa, então não há promoção de lock dentro da transação. |
+| Otimista (`version` + retry) | Sob 50 requisições na mesma wallet vira tempestade de retries; as regras multi-passo da Fase 3 pedem um estado estável (SPEC D1). |
+| `UPDATE wallets SET balance = balance - x WHERE balance >= x` atômico | Resolve só o caso de um passo; BET/WIN/LOSS e as reversões da Fase 3 usariam mecanismos diferentes. Um único padrão de lock mantém o raciocínio uniforme. |
+
+Custo assumido: escritas na **mesma wallet** são serializadas, então uma wallet muito quente tem o throughput limitado pelo tempo de uma transação (lock, 1 insert, 1 update, 1 insert, commit, sem I/O de rede externa dentro dela).
+Wallets distintas não se bloqueiam (cenário #3). O modo do lock reduz deadlocks se alguém errar a ordem (Fase 0: com a ordem errada, `FOR UPDATE` deu 86–87 deadlocks e `FOR NO KEY UPDATE` 0 nesta máquina),
+mas a **ordem** é a regra: a corretude não depende do modo. A vantagem prática de `FOR NO KEY UPDATE` sobre `FOR UPDATE` neste fluxo **não foi medida**; a escolha se apoia na compatibilidade de modos descrita acima.
+
+**SQL "parametrizado" no MikroORM.** `em.execute(sql, params)` com marcadores `?` **não** envia parâmetros ao servidor: o MikroORM interpola e escapa os valores no cliente
+(`AbstractSqlConnection.prepareQuery` chamando `platform.formatQuery`, verificado no código instalado). É seguro contra injeção enquanto os valores passam por `params` (nunca concatenados),
+e isso é testado: um id malicioso é recusado pelo banco como uuid inválido e textos com aspas, barra invertida, `?` e `$1` são gravados literalmente (`wager-repositories.test.ts`).
+Bind real (`$1`) exigiria o `sql` do Kysely, hoje dependência transitiva do MikroORM; não adotamos para não declarar uma dependência nova só para isso.
+
+**2. Idempotência só no banco.** Três camadas, nenhuma depende de memória do processo:
+(a) fast-path por `idempotency_key` sem lock, só para não disputar a wallet em replays; (b) `UNIQUE (idempotency_key)` decide a corrida via `ON CONFLICT DO NOTHING`;
+(c) `UNIQUE (provider_id, external_transaction_id)` barra a mesma identidade do provedor com outra chave (`23505` vira `IdempotencyConflictError` e 409).
+Replay e conflito são separados por `payloadHash`.
+
+`payloadHash` = SHA-256 (hex) do **JSON canônico** (chaves ordenadas recursivamente, sem espaços) de
+`{providerId, externalTransactionId, playerId, walletId, roundId, gameId, kind, money: {amount, currency}}`.
+`amount` já vem normalizado com 2 casas por `Money.toProps()`. A `Idempotency-Key` e metadados de transporte ficam fora. O algoritmo tem teste com vetor fixo calculado fora do código (`payload-hash.test.ts`).
+`referenceExternalTransactionId` ainda não entra no hash porque é rejeitado nesta fase; a Fase 3 o incluirá.
+
+Corridas da mesma chave: na **mesma wallet**, o lock as serializa e a 2ª encontra a chave já commitada (replay). Em **wallets diferentes**, o índice único faz a 2ª inserção esperar o commit da 1ª,
+retornar sem linha e reler: o hash difere (a wallet está no hash), então 409; coberto em `process-wager-transaction.test.ts`. Não há deadlock: quem espera no índice só segura a própria wallet, e quem o segura não precisa dela.
+
+**3. Transação gravada uma vez, no estado final.** A decisão (`settleWager`, domínio puro) acontece em memória, com a wallet travada; o `INSERT` já leva `status`, `failure_code`, `observed_balance` e `processed_at`.
+Nunca existe linha `PENDING` visível, não há `UPDATE` posterior (o trigger `wager_transactions_guard` já tornaria terminais imutáveis) e o replay devolve o saldo da época sem recalcular.
+Rejeições de negócio (`INSUFFICIENT_BALANCE`, `CURRENCY_MISMATCH`, `PLAYER_MISMATCH`) são gravadas, portanto auditáveis, e não geram ledger nem mudam `version`.
+Wallet inexistente é a única entrada sem registro: não há wallet para ancorar a FK, então 404 e nada persistido.
+
+**4. Erros transitórios.** `40P01`, `40001` e falhas de conexão reexecutam o trabalho (3 tentativas, backoff com jitter, `MikroOrmUnitOfWork`); esgotado, 503 com `Retry-After`.
+O callback de `uow.run` é reexecutável porque não tem efeito fora do banco (os ids são gerados a cada tentativa).
+
+### Interpretações adotadas nesta fase
+
+- `amount > 0` sempre (SPEC §3.5): zero e negativo são 400 na borda. Mais de 2 casas é 400 antes de tocar o banco.
+- Precedência das rejeições: `PLAYER_MISMATCH`, depois `CURRENCY_MISMATCH`, depois `INSUFFICIENT_BALANCE`. `LOSS` não é rejeitada por saldo (não debita).
+- `balance` na resposta é o `observed_balance`: saldo após a operação em `PROCESSED`, saldo visto na decisão em `REJECTED`. Replay devolve o mesmo valor (SPEC §3.2).
+- Replay de `REJECTED` devolve 422 e o mesmo `failureCode`; replay de `PROCESSED`, 201. Mapeamento HTTP: 201 processada, 422 rejeitada (e `FAILED`, ainda inalcançável), 202 aguardando referência (Fase 3).
+- A `Idempotency-Key` é obrigatória (1 a 255 caracteres). O formato `{providerId}:{externalTransactionId}` é a recomendação do README, não uma exigência: o valor enviado é a fonte da verdade.
+- **Fora desta fase, 400:** `kind` `OPENING` (interno), `REFUND` e `ROLLBACK`, e qualquer `referenceExternalTransactionId`, inclusive em `WIN`/`LOSS`. A resolução de referência é da Fase 3; aceitar o campo sem resolvê-lo daria ao provedor a falsa impressão de que foi validado.
+- O cabeçalho é validado no controller porque o Nest não aplica pipes a `@Headers`; o corpo e os parâmetros usam `ZodValidationPipe`.
+
+### Verificação
+
+| Camada | Arquivos | O que prova |
+| --- | --- | --- |
+| Unidade | `wager-settlement`, `wagering-dto`, `payload-hash`, `error-mapper` | Regras por operação (BET, WIN, LOSS; insuficiente, moeda, player, precedência; REFUND/ROLLBACK/OPENING não liquidam); borda HTTP; hash |
+| Integração (Postgres real) | `wager-repositories`, `process-wager-transaction`, `process-wager-lock-order`, `process-wager-atomicity`, `wagering-http` | Regras com o banco, replay e conflitos, lock como 1ª instrução e ordem dos `INSERT`, atomicidade com falha injetada em 3 pontos (nada persiste e o mesmo comando depois funciona), status e corpos HTTP |
+| Concorrência (Postgres real) | `wager-transactions`, `wager-multiprocess` | #1 mesma BET x50: 1 débito e 49 replays com o mesmo corpo. #2 duas BETs de 80,00 em 100,00 (10 rodadas): 1 `PROCESSED`, 1 `REJECTED`, saldo 20,00. 30 BETs de 10,00 em 100,00: 10 processadas, saldo 0,00. #3 50 wallets x (BET+WIN+LOSS) em paralelo, todas 201. #4 três processos reais, cada um com instância e pool próprios |
+
+Invariante final em todos: `wallet.balance == saldo reconstruído pelo ledger`. Nenhum teste mocka PostgreSQL; a falha do teste de atomicidade é injetada trocando um método de repositório, com o banco real.
+Controle negativo: trocando `lockWallet` por uma leitura sem lock, 4 dos 5 testes de concorrência e 4 dos 6 de ordem de lock falham (o #1 continua passando, porque a duplicidade é barrada pelo `UNIQUE`; o lock protege o saldo, não a chave).
+
+### Limitações e pontos em aberto
+
+- Wallet muito quente serializa: não há `lock_timeout` nem `statement_timeout` configurados, e requisições aguardando o lock seguram uma conexão do pool do driver. Sob carga muito maior que o pool, o limite efetivo é o pool; medir e dimensionar fica para o teste de carga (bônus).
+- `em.execute` interpola no cliente (ver acima). Um `WIN` que levaria o saldo acima do limite de `NUMERIC(19,2)` lança `InvalidMoneyError`, tratado como bug (500), e nada é gravado.
+- O `providerId` `internal` não é reservado; só colidiria com identidades `opening:{walletId}`, e o `UNIQUE` já barra a colisão.
+- Os eventos do outbox (Fase 5) ainda não existem: hoje nada é publicado, então a regra "nunca publicar antes do commit" vale por construção. O outbox entrará como último passo da mesma transação.
+- Métricas de conflito de lock e de duração (`wager_lock_conflicts_total`, `wager_wallet_lock_wait_seconds`) e logs estruturados com `correlationId` são da Fase 6.
