@@ -9,6 +9,7 @@ import type { UnitOfWork } from '../../src/application/ports';
 import type { ProcessingObserver } from '../../src/application/observers';
 import { ProcessWagerTransactionUseCase } from '../../src/application/process-wager-transaction.use-case';
 import { type MessageQueue, type QueueMessage } from '../../src/infrastructure/messaging/message-queue';
+import type { LogLevel } from '../../src/infrastructure/observability/json-log';
 import { type VisibilityBackoffOptions } from '../../src/interface/sqs/visibility-backoff';
 import { WAGER_CONSUMER_NAME, WagerMessageHandler, type WagerProcessor } from '../../src/interface/sqs/wager-message-handler';
 import { QueueConsumer, type QueueConsumerOptions, type QueueObserver } from '../../src/interface/sqs/queue-consumer';
@@ -181,7 +182,7 @@ export interface TestConsumerOptions {
 /** Monta o consumidor como a aplicação monta, com tempos curtos para os testes. Os logs ficam em memória. */
 export function createTestConsumer({ queue, processor, consume = {}, backoff = { baseSeconds: 0, maxSeconds: 0 }, random, observer }: TestConsumerOptions) {
   const logs: { level: string; message: string; fields: Record<string, unknown> }[] = [];
-  const log = (level: 'info' | 'error', message: string, fields: Record<string, unknown> = {}) => {
+  const log = (level: LogLevel, message: string, fields: Record<string, unknown> = {}) => {
     logs.push({ level, message, fields });
   };
   const handler = new WagerMessageHandler(processor, { consumerName: WAGER_CONSUMER_NAME, backoff, log, ...(random ? { random } : {}) });

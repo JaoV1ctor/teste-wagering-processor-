@@ -24,4 +24,6 @@ export default tseslint.config(
   // Corpo das respostas HTTP nos testes é JSON arbitrário: `any` só aqui.
   { files: ['test/**/*.ts'], rules: { '@typescript-eslint/no-explicit-any': 'off' } },
   { files: ['src/**/*.ts'], rules: { 'no-restricted-syntax': ['error', ...moneyIsNeverNumber] } },
+  // Um único ponto de saída de log (src/infrastructure/observability/json-log.ts): nada de console.* na aplicação nem nos scripts.
+  { files: ['src/**/*.ts', 'scripts/**/*.ts'], rules: { 'no-console': 'error' } },
 );

@@ -41,7 +41,7 @@ export interface WagerMessageHandlerOptions {
  *  - NEGÓCIO (PROCESSED, REJECTED, PENDING_REFERENCE, replay, duplicata do inbox): o commit já gravou o resultado => ack.
  *  - TRANSITÓRIO (`TransientInfrastructureError`: Postgres fora, 40P01, 40001, 55P03, retry esgotado) => sem ack, backoff.
  *  - PERMANENTE (malformada, tipo desconhecido, conflito, wallet inexistente, bug) => DLQ explícita e depois ack.
- * O log usa o `messageId` como correlationId e nunca o corpo.
+ * O log usa o `messageId` como correlationId e nunca o corpo. O sucesso é logado por quem observa o caso de uso (`ObservedProcessing`), com os ids da transação.
  */
 export class WagerMessageHandler {
   constructor(
@@ -54,8 +54,7 @@ export class WagerMessageHandler {
     try {
       const parsed = parseWagerMessage(body);
       messageId = parsed.messageId;
-      const outcome = await this.processor.execute({ ...parsed.command, correlationId: messageId }, { consumerName: this.options.consumerName, messageId });
-      this.options.log('info', 'wager_message_processed', { correlationId: messageId, outcome: describeOutcome(outcome) });
+      await this.processor.execute({ ...parsed.command, correlationId: messageId }, { consumerName: this.options.consumerName, messageId });
       return { action: 'ack' };
     } catch (error) {
       return this.classify(error, messageId, receiveCount);
@@ -63,7 +62,7 @@ export class WagerMessageHandler {
   }
 
   private classify(error: unknown, messageId: string | undefined, receiveCount: number): Disposition {
-    const fields = { correlationId: messageId, receiveCount, ...describeError(error) };
+    const fields = { correlationId: messageId, messageId, receiveCount, ...describeError(error) };
     if (error instanceof TransientInfrastructureError) {
       const delaySeconds = visibilityBackoffSeconds(receiveCount, this.options.backoff, this.options.random ?? Math.random);
       this.options.log('error', 'wager_message_transient_failure', { ...fields, delaySeconds });
@@ -82,9 +81,4 @@ function deadLetterReasonFor(error: unknown): DeadLetterReason {
   if (error instanceof InboxPayloadConflictError) return 'INBOX_PAYLOAD_CONFLICT';
   if (error instanceof WalletNotFoundError) return 'WALLET_NOT_FOUND';
   return 'UNEXPECTED_ERROR';
-}
-
-function describeOutcome(outcome: ProcessWagerResult | DuplicateMessageResult): string {
-  if ('duplicateMessage' in outcome) return 'DUPLICATE_MESSAGE';
-  return outcome.idempotentReplay ? `REPLAY_${outcome.transaction.status}` : outcome.transaction.status;
 }

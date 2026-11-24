@@ -1,5 +1,11 @@
-import { type ArgumentsHost, Catch, type ExceptionFilter, Logger } from '@nestjs/common';
+import { type ArgumentsHost, Catch, type ExceptionFilter } from '@nestjs/common';
+import { describeError, logJson } from '../../infrastructure/observability/json-log';
 import { toHttpError } from './error-mapper';
+import { CorrelationIdHeader } from './wagering.dto';
+
+interface HttpRequest {
+  headers: Record<string, string | string[] | undefined>;
+}
 
 interface HttpResponse {
   status(code: number): { set(headers: Record<string, string>): { json(body: unknown): void } };
@@ -7,17 +13,16 @@ interface HttpResponse {
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
-  private readonly logger = new Logger(HttpExceptionFilter.name);
-
   catch(exception: unknown, host: ArgumentsHost): void {
     const { status, body, headers } = toHttpError(exception);
-    if (status >= 500) this.logFailure(status, exception);
-    host.switchToHttp().getResponse<HttpResponse>().status(status).set(headers ?? {}).json(body);
+    const http = host.switchToHttp();
+    if (status >= 500) logJson('error', 'request_failed', { status, correlationId: correlationIdOf(http.getRequest<HttpRequest>()), ...describeError(exception) });
+    http.getResponse<HttpResponse>().status(status).set(headers ?? {}).json(body);
   }
+}
 
-  /** Nunca registra o corpo da requisição: só tipo e mensagem do erro. */
-  private logFailure(status: number, exception: unknown): void {
-    const error = exception instanceof Error ? exception : new Error(String(exception));
-    this.logger.error(JSON.stringify({ event: 'request_failed', status, error: error.name, message: error.message }), error.stack);
-  }
+/** Nunca registra o corpo da requisição: só o id de correlação (o mesmo limite do header que o controller valida) e o resultado. */
+function correlationIdOf(request: HttpRequest): string | undefined {
+  const parsed = CorrelationIdHeader.safeParse(request.headers['x-correlation-id']);
+  return parsed.success ? parsed.data : undefined;
 }

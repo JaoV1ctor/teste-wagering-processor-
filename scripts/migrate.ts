@@ -4,7 +4,7 @@ import { createOrmConfig } from '../src/infrastructure/persistence/orm.config';
 
 const direction = process.argv[2];
 if (direction !== 'up' && direction !== 'down') {
-  console.error('uso: bun run scripts/migrate.ts <up|down>');
+  process.stderr.write('uso: bun run scripts/migrate.ts <up|down>\n');
   process.exit(2);
 }
 
