@@ -505,14 +505,19 @@ Códigos de `FailureReason`: `MALFORMED_MESSAGE`, `UNKNOWN_MESSAGE_TYPE`, `INBOX
 
 **Decisões que divergem de uma leitura literal do enunciado (e por quê):**
 
-- **`409` (conflito de idempotência) e wallet inexistente (`404`) são permanentes, não "negócio".** Diferente de `REJECTED`, nada é gravado: não há transação nem linha de inbox.
-  Dar ack apagaria a mensagem sem deixar rastro, e no SQS não existe resposta HTTP para avisar o produtor. A DLQ é o único registro auditável.
-- **`FAILED / INTERNAL_PERMANENT_ERROR` não é gravado.** Exigiria uma wallet existente (FK) e uma segunda transação SQL no caminho de erro; pior, uma transação `FAILED` é terminal e
-  ocuparia a `idempotencyKey` para sempre, de modo que, corrigido o bug, o reenvio do provedor devolveria `FAILED` em vez de processar. A trilha de auditoria desses casos é a DLQ com `FailureReason`.
+- **Interpretação nossa: `409` (conflito de idempotência) e wallet inexistente (`404`) são permanentes, não "negócio".** O README §10 pede ack para erros de **negócio** (terminais), e um mapeamento direto dos status HTTP (`422` e também `409`) os poria nessa classe. Divergimos para a entrada SQS por uma razão objetiva: `REJECTED` é um resultado **gravado** (transação com `failureCode`, auditável e
+  devolvido no replay), então o ack não perde nada; já o `409` e o `404` **não gravam nada** (nem transação, nem linha de inbox). Dar ack apagaria a mensagem sem deixar rastro, e no SQS não existe
+  resposta HTTP para avisar o produtor. Por isso vão à DLQ (`IDEMPOTENCY_CONFLICT`, `WALLET_NOT_FOUND`) e só então recebem ack. Pelo HTTP o comportamento continua `409`/`404`.
+  Se o avaliador preferir a leitura literal, basta mover essas duas classes para `ack` em `deadLetterReasonFor`.
+- **Decisão: `FAILED / INTERNAL_PERMANENT_ERROR` não é gravado no caminho SQS.** Exigiria uma wallet existente (FK) e uma segunda transação SQL dentro do tratamento de erro (que pode falhar pelo mesmo motivo que
+  originou o erro). Pior, `FAILED` é terminal (trigger `wager_transactions_guard`) e ocuparia a `idempotencyKey` para sempre: corrigido o bug, o reenvio do provedor devolveria `FAILED` em vez de
+  processar. Payload malformado nem tem wallet nem chave confiáveis para gravar. A trilha de auditoria desses casos é a DLQ com `FailureReason`, que permite reprocessar depois da correção.
 - **Mesmo `messageId` com `payload_hash` diferente é permanente.** Uma reentrega do SQS nunca muda o corpo; se mudou, o produtor reutilizou o id e não há como saber qual conteúdo vale.
   Processar de novo seria arriscado e descartar em silêncio esconderia o erro. O `payload_hash` do inbox é o mesmo hash de negócio do `WagerTransaction` (sem a chave de idempotência, que é metadado).
 - **Erro inesperado é permanente na primeira ocorrência.** Retentar um bug só repete o bug; a DLQ preserva a mensagem para reprocesso manual depois da correção.
-  Custo assumido: uma falha transitória que o código não reconhece como tal (SQLSTATE fora da lista de `transient-retry.ts`) vai à DLQ em vez de ser retentada.
+  Custo assumido: uma falha transitória que o código não reconhece como tal vai à DLQ em vez de ser retentada. `isTransient` (`transient-retry.ts`) reconhece:
+  `40P01`, `40001`, `55P03`, `57P01`, `57P02`, `57P03`, as **classes inteiras 08 (conexão) e 53 (recursos insuficientes)**, `ECONNREFUSED`/`ECONNRESET`/`ETIMEDOUT`/`EPIPE` como `code` **ou só na mensagem**,
+  as mensagens do `pg-pool` sem código ("Connection terminated unexpectedly", "timeout exceeded when trying to connect") e procura tudo isso também na cadeia de `cause` (o ORM embrulha o erro do driver).
 
 ### Inbox e idempotência são camadas diferentes
 
