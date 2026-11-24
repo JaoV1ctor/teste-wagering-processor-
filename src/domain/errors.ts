@@ -42,3 +42,6 @@ export class InvalidTransactionStateError extends DomainError {
 }
 
 export class InvalidInboxMessageError extends DomainError {}
+
+/** Evento montado a partir de um estado que não o justifica (ex.: `Processed` de uma transação REJECTED): erro de programação. */
+export class InvalidIntegrationEventError extends DomainError {}
