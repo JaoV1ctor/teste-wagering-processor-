@@ -506,7 +506,9 @@ describe('shutdown (SIGTERM)', () => {
       await sendWager(client, queues, wallet);
       await Bun.sleep(1500); // janela para PROVAR que nada é buscado depois do stop
       expect(receives).toBe(after);
-      expect((await peek(client, queues.mainUrl)).length).toBe(1);
+      // Não foi processada nem apagada. (Pode estar em voo: um long polling abortado no cliente ainda vive no servidor até o fim da espera.)
+      expect(await isQueueEmpty(client, queues.mainUrl)).toBe(false);
+      expect(await ledgerBalance(probe, wallet.id)).toEqual({ stored: '100.00', rebuilt: '100.00', entries: 1 });
     });
   });
 });
