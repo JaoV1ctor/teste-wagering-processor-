@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { TransientInfrastructureError } from '../../src/application/errors';
-import { isTransient, withTransientRetry } from '../../src/infrastructure/persistence/transient-retry';
+import { isLockConflict, isTransient, withTransientRetry } from '../../src/infrastructure/persistence/transient-retry';
 
 const fast = { attempts: 3, baseDelayMs: 0 };
 const pgError = (code: string) => Object.assign(new Error(`pg ${code}`), { code });
@@ -85,5 +85,52 @@ describe('withTransientRetry', () => {
     const error = await withTransientRetry(async () => { calls += 1; throw cause; }, fast).catch((e: unknown) => e);
     expect(error).toBe(cause);
     expect(calls).toBe(1);
+  });
+});
+
+describe('isLockConflict (o que conta em wager_lock_conflicts_total)', () => {
+  test.each(['40P01', '40001', '55P03'])('%s (deadlock, serialização, lock_timeout) é conflito de lock', (code) => {
+    expect(isLockConflict(pgError(code))).toBe(true);
+  });
+
+  test.each(['57P01', '08006', '53300', '23505', 'ECONNREFUSED'])('%s é transitório (ou não) mas não é conflito de lock', (code) => {
+    expect(isLockConflict(pgError(code))).toBe(false);
+  });
+
+  test('o código pode estar na causa; erro sem código e valor que não é Error não são conflito', () => {
+    expect(isLockConflict(new Error('orm', { cause: pgError('40P01') }))).toBe(true);
+    expect(isLockConflict(new Error('bug'))).toBe(false);
+    expect(isLockConflict(undefined)).toBe(false);
+  });
+});
+
+describe('onTransientFailure', () => {
+  test('é chamado a cada falha transitória: willRetry true enquanto há tentativa, false na última', async () => {
+    const seen: { code: unknown; willRetry: boolean }[] = [];
+    const work = async () => { throw pgError('40P01'); };
+    await expect(
+      withTransientRetry(work, { ...fast, onTransientFailure: (error, willRetry) => seen.push({ code: (error as { code?: string }).code, willRetry }) }),
+    ).rejects.toBeInstanceOf(TransientInfrastructureError);
+    expect(seen).toEqual([{ code: '40P01', willRetry: true }, { code: '40P01', willRetry: true }, { code: '40P01', willRetry: false }]);
+  });
+
+  test('não é chamado em sucesso nem em erro permanente', async () => {
+    const seen: unknown[] = [];
+    const onTransientFailure = (error: unknown) => seen.push(error);
+    expect(await withTransientRetry(async () => 'ok', { ...fast, onTransientFailure })).toBe('ok');
+    await expect(withTransientRetry(async () => { throw pgError('23505'); }, { ...fast, onTransientFailure })).rejects.toThrow('pg 23505');
+    expect(seen).toEqual([]);
+  });
+
+  test('uma falha seguida de sucesso: 1 chamada com willRetry true e o resultado volta', async () => {
+    let calls = 0;
+    const seen: boolean[] = [];
+    const result = await withTransientRetry(async () => {
+      calls += 1;
+      if (calls === 1) throw pgError('40001');
+      return 'depois';
+    }, { ...fast, onTransientFailure: (_error, willRetry) => seen.push(willRetry) });
+    expect(result).toBe('depois');
+    expect(seen).toEqual([true]);
   });
 });

@@ -35,6 +35,9 @@ function isTransientCode(code: string): boolean {
   return SQLSTATE_FORMAT.test(code) && TRANSIENT_SQLSTATE_CLASSES.some((sqlstateClass) => code.startsWith(sqlstateClass));
 }
 
+/** Deadlock, falha de serialização e lock_timeout: duas transações disputando a mesma linha (a métrica `wager_lock_conflicts_total`). */
+const LOCK_CONFLICT_SQLSTATES = new Set(['40P01', '40001', '55P03']);
+
 /** Examina o erro e a cadeia de `cause` (o ORM e o driver embrulham o erro original). */
 export function isTransient(error: unknown): boolean {
   for (let depth = 0, current = error; depth < MAX_CAUSE_DEPTH && typeof current === 'object' && current !== null; depth += 1) {
@@ -46,18 +49,31 @@ export function isTransient(error: unknown): boolean {
   return false;
 }
 
+/** Mesma busca na cadeia de `cause`: o conflito de lock é um subconjunto dos erros transitórios. */
+export function isLockConflict(error: unknown): boolean {
+  for (let depth = 0, current = error; depth < MAX_CAUSE_DEPTH && typeof current === 'object' && current !== null; depth += 1) {
+    if (current instanceof DeadlockException) return true;
+    if ('code' in current && typeof current.code === 'string' && LOCK_CONFLICT_SQLSTATES.has(current.code)) return true;
+    current = 'cause' in current ? current.cause : undefined;
+  }
+  return false;
+}
+
 export interface RetryOptions {
   attempts?: number;
   baseDelayMs?: number;
+  /** Chamado a cada falha transitória; `willRetry` é falso na última tentativa (a que vira 503). Só observação: não pode alterar o fluxo. */
+  onTransientFailure?: (error: unknown, willRetry: boolean) => void;
 }
 
 /** Retry curto com jitter total; esgotado, vira `TransientInfrastructureError` (503 / não-ack). Erros permanentes passam intactos. */
-export async function withTransientRetry<T>(work: () => Promise<T>, { attempts = 3, baseDelayMs = 20 }: RetryOptions = {}): Promise<T> {
+export async function withTransientRetry<T>(work: () => Promise<T>, { attempts = 3, baseDelayMs = 20, onTransientFailure }: RetryOptions = {}): Promise<T> {
   for (let attempt = 1; ; attempt += 1) {
     try {
       return await work();
     } catch (error) {
       if (!isTransient(error)) throw error;
+      onTransientFailure?.(error, attempt < attempts);
       if (attempt >= attempts) throw new TransientInfrastructureError(error);
       await sleep(Math.random() * baseDelayMs * 2 ** attempt);
     }

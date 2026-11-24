@@ -7,6 +7,14 @@ export interface MessageHandler {
   handle(body: string, receiveCount: number): Promise<Disposition>;
 }
 
+/** O que o consumidor informa para métrica depois de executar a decisão sobre a mensagem. Só observação. */
+export interface QueueObserver {
+  /** A mensagem foi copiada para a DLQ (falha permanente). */
+  deadLettered(): void;
+  /** A mensagem foi devolvida à fila com backoff (falha transitória). */
+  retried(): void;
+}
+
 export interface QueueConsumerOptions {
   /** Máximo de mensagens em processamento ao mesmo tempo neste processo (cada uma ocupa uma conexão do pool). */
   concurrency: number;
@@ -19,6 +27,7 @@ export interface QueueConsumerOptions {
   /** Pausa depois de falha no ReceiveMessage (SQS fora): evita laço apertado. */
   receiveErrorPauseMs: number;
   log: typeof logJson;
+  observer?: QueueObserver;
 }
 
 /** `queued`: aguardando a vez do seu grupo; `returned`: devolvida à fila no shutdown (o resultado do processamento, se houver, é descartado). */
@@ -132,10 +141,12 @@ export class QueueConsumer {
         return;
       case 'retry':
         await this.queue.changeVisibility(message, disposition.delaySeconds);
+        this.options.observer?.retried();
         return;
       case 'dead-letter':
         // Primeiro a cópia na DLQ, só depois o ack: se morrer no meio, a mensagem volta e a DLQ deduplica pelo MessageDeduplicationId.
         await this.queue.deadLetter(message, disposition.reason);
+        this.options.observer?.deadLettered();
         await this.queue.acknowledge(message);
         return;
     }

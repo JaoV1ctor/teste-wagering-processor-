@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { OutboxMessage } from '../domain/outbox-message';
-import { WagerTransactionStatus } from '../domain/wager-transaction';
+import { type WagerTransaction, WagerTransactionStatus } from '../domain/wager-transaction';
 import { WalletNotFoundError } from './errors';
 import { integrationEventsFor } from './integration-events';
 import type { ClaimedPendingReference, UnitOfWork } from './ports';
@@ -24,6 +24,8 @@ export interface ReprocessSummary {
 export interface ReprocessOptions {
   /** Obrigatório de propósito: uma falha por transação nunca pode ser engolida. Quem monta o worker decide registrar ou relançar. */
   onError: (error: unknown, context: ClaimedPendingReference) => void;
+  /** Chamado DEPOIS do commit quando a transação saiu de PENDING_REFERENCE para PROCESSED ou REJECTED (reagendar não chama). Só observação. */
+  onSettled?: (transaction: WagerTransaction) => void;
   clock?: () => Date;
   newId?: () => string;
   random?: () => number;
@@ -44,12 +46,14 @@ export class ReprocessPendingReferencesUseCase {
   private readonly batchSize: number;
   private readonly leaseMs: number;
   private readonly onError: ReprocessOptions['onError'];
+  private readonly onSettled: ((transaction: WagerTransaction) => void) | undefined;
 
   constructor(
     private readonly uow: UnitOfWork,
-    { onError, clock = () => new Date(), newId = randomUUID, random, batchSize = DEFAULT_REPROCESS_BATCH_SIZE, leaseMs = DEFAULT_LEASE_MS }: ReprocessOptions,
+    { onError, onSettled, clock = () => new Date(), newId = randomUUID, random, batchSize = DEFAULT_REPROCESS_BATCH_SIZE, leaseMs = DEFAULT_LEASE_MS }: ReprocessOptions,
   ) {
     this.onError = onError;
+    this.onSettled = onSettled;
     this.clock = clock;
     this.newId = newId;
     this.random = random;
@@ -76,12 +80,13 @@ export class ReprocessPendingReferencesUseCase {
   }
 
   async reprocessOne({ id, walletId }: ClaimedPendingReference): Promise<ReprocessOutcome> {
-    return this.uow.run(async ({ wallets, transactions, ledger, outbox }) => {
+    // O resultado sai da transação junto com a transação de domínio: `run` pode reexecutar `work`, então nada é guardado fora dele.
+    const { outcome, transaction } = await this.uow.run(async ({ wallets, transactions, ledger, outbox }) => {
       const wallet = await wallets.lockWallet(walletId); // primeira instrução que toca a wallet (SPEC D2)
       if (!wallet) throw new WalletNotFoundError(walletId);
 
       const transaction = await transactions.findById(id);
-      if (transaction?.status !== WagerTransactionStatus.PendingReference) return 'skipped';
+      if (transaction?.status !== WagerTransactionStatus.PendingReference) return { outcome: 'skipped' as const, transaction: undefined };
 
       const now = this.clock();
       const entry = await settleLocked({ transactions }, wallet, transaction, { entryId: this.newId(), at: now, random: this.random });
@@ -95,8 +100,10 @@ export class ReprocessPendingReferencesUseCase {
         transaction, wallet, entry, previousStatus: WagerTransactionStatus.PendingReference, correlationId: undefined, at: now, newId: this.newId,
       });
       for (const event of events) await outbox.add(OutboxMessage.enqueue(event));
-      return outcomeOf(transaction.status);
+      return { outcome: outcomeOf(transaction.status), transaction };
     });
+    if (transaction && outcome !== 'rescheduled') this.onSettled?.(transaction); // só depois do commit
+    return outcome;
   }
 }
 

@@ -22,9 +22,23 @@ export interface Api {
   close(): Promise<void>;
 }
 
-/** Sobe a aplicação real (mesmo AppModule da produção) em porta efêmera, contra o Postgres do compose. */
-export async function startApi(): Promise<Api> {
-  const app = await NestFactory.create(AppModule, { logger: false });
+/**
+ * Sobe a aplicação real (mesmo AppModule da produção) em porta efêmera, contra o Postgres do compose.
+ * `env` sobrescreve variáveis SÓ durante a criação do módulo (é quando a configuração é lida): serve para apontar uma dependência
+ * para um endereço morto e provar o readiness com a dependência fora do ar.
+ */
+export async function startApi(env: Record<string, string> = {}): Promise<Api> {
+  const previous = Object.fromEntries(Object.keys(env).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, env);
+  let app: INestApplication;
+  try {
+    app = await NestFactory.create(AppModule, { logger: false });
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
   await app.listen(0);
   const url = await app.getUrl();
   return {

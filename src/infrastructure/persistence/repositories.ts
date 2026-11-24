@@ -25,7 +25,10 @@ import { WalletMapper } from './wallet.mapper';
  * (wallet -> transação -> ledger), e não na ordem que o ORM escolheria no flush final.
  */
 export class MikroOrmWalletRepository implements WalletRepository {
-  constructor(private readonly em: EntityManager) {}
+  constructor(
+    private readonly em: EntityManager,
+    private readonly onLockWait: ((seconds: number) => void) | undefined = undefined,
+  ) {}
 
   async add(wallet: Wallet): Promise<void> {
     this.em.persist(WalletMapper.toEntity(wallet));
@@ -49,7 +52,13 @@ export class MikroOrmWalletRepository implements WalletRepository {
    * em READ COMMITTED a leitura seguinte já enxerga o commit de quem segurava o lock, e ninguém altera a linha até o fim da transação.
    */
   async lockWallet(id: string): Promise<Wallet | undefined> {
-    const locked = await this.em.execute<{ id: string }[]>('select id from wallets where id = ? for no key update', [id]);
+    const started = performance.now();
+    let locked: { id: string }[];
+    try {
+      locked = await this.em.execute<{ id: string }[]>('select id from wallets where id = ? for no key update', [id]);
+    } finally {
+      this.onLockWait?.((performance.now() - started) / 1000); // medida também quando o lock falha (lock_timeout): é a espera mais longa
+    }
     if (locked.length === 0) return undefined;
     return this.findById(id);
   }
@@ -201,6 +210,15 @@ export class MikroOrmOutboxRepository implements OutboxRepository {
       { id: message.id, publishedAt: null },
       { attempts: message.attempts, nextAttemptAt: message.nextAttemptAt },
     );
+  }
+
+  /** Só lê. Custa varrer os pendentes (poucos, se o publisher acompanha); calculado no banco para não converter timestamp do driver à mão. */
+  async oldestPendingAgeMs(): Promise<number> {
+    const rows = await this.em.execute<{ age_ms: string }[]>(
+      `select greatest(coalesce(floor(extract(epoch from (now() - min(occurred_at))) * 1000), 0), 0)::text as age_ms
+         from outbox_messages where published_at is null`,
+    );
+    return Number.parseInt(rows[0]?.age_ms ?? '0', 10);
   }
 }
 

@@ -3,10 +3,18 @@ import type { Repositories, UnitOfWork } from '../../application/ports';
 import {
   MikroOrmInboxRepository, MikroOrmLedgerRepository, MikroOrmOutboxRepository, MikroOrmWagerTransactionRepository, MikroOrmWalletRepository,
 } from './repositories';
-import { type RetryOptions, withTransientRetry } from './transient-retry';
+import { isLockConflict, type RetryOptions, withTransientRetry } from './transient-retry';
 
-const repositoriesFor = (em: EntityManager): Repositories => ({
-  wallets: new MikroOrmWalletRepository(em),
+/** O que a persistência informa para métrica; nunca altera o fluxo. Quem implementa é a camada de observabilidade. */
+export interface PersistenceObserver {
+  /** Cada falha transitória. `lockConflict`: deadlock, serialização ou lock_timeout; `willRetry`: ainda há tentativa interna. */
+  transientFailure(failure: { lockConflict: boolean; willRetry: boolean }): void;
+  /** Quanto o `SELECT ... FOR NO KEY UPDATE` da wallet esperou (inclusive quando falhou). */
+  walletLockWaited(seconds: number): void;
+}
+
+const repositoriesFor = (em: EntityManager, observer: PersistenceObserver | undefined): Repositories => ({
+  wallets: new MikroOrmWalletRepository(em, observer ? (seconds) => observer.walletLockWaited(seconds) : undefined),
   transactions: new MikroOrmWagerTransactionRepository(em),
   ledger: new MikroOrmLedgerRepository(em),
   inbox: new MikroOrmInboxRepository(em),
@@ -23,18 +31,23 @@ export const DEFAULT_LOCK_TIMEOUT_MS = 3000;
 export interface UnitOfWorkOptions {
   retry?: RetryOptions;
   lockTimeoutMs?: number;
+  observer?: PersistenceObserver;
 }
 
 /** Cada chamada usa um fork novo do EntityManager: sem identity map compartilhado entre requisições. */
 export class MikroOrmUnitOfWork implements UnitOfWork {
+  private readonly observer: PersistenceObserver | undefined;
   private readonly retry: RetryOptions;
   private readonly lockTimeout: string;
 
   constructor(
     private readonly orm: MikroORM,
-    { retry = {}, lockTimeoutMs = DEFAULT_LOCK_TIMEOUT_MS }: UnitOfWorkOptions = {},
+    { retry = {}, lockTimeoutMs = DEFAULT_LOCK_TIMEOUT_MS, observer }: UnitOfWorkOptions = {},
   ) {
-    this.retry = retry;
+    this.observer = observer;
+    this.retry = observer
+      ? { ...retry, onTransientFailure: (error, willRetry) => observer.transientFailure({ lockConflict: isLockConflict(error), willRetry }) }
+      : retry;
     this.lockTimeout = `${lockTimeoutMs}ms`;
   }
 
@@ -48,13 +61,13 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
       () =>
         this.orm.em.fork().transactional(async (em) => {
           await em.execute("select set_config('lock_timeout', ?, true)", [this.lockTimeout]);
-          return work(repositoriesFor(em));
+          return work(repositoriesFor(em, this.observer));
         }),
       this.retry,
     );
   }
 
   read<T>(work: (repositories: Repositories) => Promise<T>): Promise<T> {
-    return withTransientRetry(() => work(repositoriesFor(this.orm.em.fork())), this.retry);
+    return withTransientRetry(() => work(repositoriesFor(this.orm.em.fork(), this.observer)), this.retry);
   }
 }

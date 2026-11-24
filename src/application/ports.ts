@@ -90,6 +90,8 @@ export interface OutboxRepository {
   markPublished(message: OutboxMessage): Promise<void>;
   /** Grava `attempts` e `next_attempt_at` depois de uma falha. Não altera um evento que já foi publicado. */
   scheduleRetry(message: OutboxMessage): Promise<void>;
+  /** Idade, em milissegundos, do evento não publicado mais antigo (por `occurred_at`, no relógio do banco); 0 se não há pendente. É o lag do outbox. */
+  oldestPendingAgeMs(): Promise<number>;
 }
 
 /** Destino dos eventos (a fila `wager-events`). Lança se não conseguiu entregar; entregar duas vezes é seguro (o consumidor deduplica por `eventId`). */

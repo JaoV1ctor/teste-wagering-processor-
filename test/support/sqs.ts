@@ -6,11 +6,12 @@ import {
 import { createQueues } from '../../scripts/create-queues';
 import { buildWagerMessage, sendWagerMessage, type WagerMessageInput } from '../../scripts/send-wager-message';
 import type { UnitOfWork } from '../../src/application/ports';
+import type { ProcessingObserver } from '../../src/application/observers';
 import { ProcessWagerTransactionUseCase } from '../../src/application/process-wager-transaction.use-case';
 import { type MessageQueue, type QueueMessage } from '../../src/infrastructure/messaging/message-queue';
 import { type VisibilityBackoffOptions } from '../../src/interface/sqs/visibility-backoff';
 import { WAGER_CONSUMER_NAME, WagerMessageHandler, type WagerProcessor } from '../../src/interface/sqs/wager-message-handler';
-import { QueueConsumer, type QueueConsumerOptions } from '../../src/interface/sqs/queue-consumer';
+import { QueueConsumer, type QueueConsumerOptions, type QueueObserver } from '../../src/interface/sqs/queue-consumer';
 import type { WagerTransactionRequested } from '../../src/interface/sqs/wager-transaction-message';
 
 /** Filas FIFO + DLQ reais no MiniStack, com prefixo único: cada teste vê só as próprias mensagens. */
@@ -149,8 +150,9 @@ export class RecordingProcessor implements WagerProcessor {
   constructor(
     uow: UnitOfWork,
     private readonly beforeExecute: (command: Parameters<WagerProcessor['execute']>[0]) => Promise<void> = async () => undefined,
+    observer?: ProcessingObserver,
   ) {
-    this.real = new ProcessWagerTransactionUseCase(uow);
+    this.real = new ProcessWagerTransactionUseCase(uow, undefined, undefined, observer);
   }
 
   async execute(command: Parameters<WagerProcessor['execute']>[0], origin: Parameters<WagerProcessor['execute']>[1]) {
@@ -173,10 +175,11 @@ export interface TestConsumerOptions {
   consume?: Partial<QueueConsumerOptions>;
   backoff?: VisibilityBackoffOptions;
   random?: () => number;
+  observer?: QueueObserver;
 }
 
 /** Monta o consumidor como a aplicação monta, com tempos curtos para os testes. Os logs ficam em memória. */
-export function createTestConsumer({ queue, processor, consume = {}, backoff = { baseSeconds: 0, maxSeconds: 0 }, random }: TestConsumerOptions) {
+export function createTestConsumer({ queue, processor, consume = {}, backoff = { baseSeconds: 0, maxSeconds: 0 }, random, observer }: TestConsumerOptions) {
   const logs: { level: string; message: string; fields: Record<string, unknown> }[] = [];
   const log = (level: 'info' | 'error', message: string, fields: Record<string, unknown> = {}) => {
     logs.push({ level, message, fields });
@@ -184,7 +187,7 @@ export function createTestConsumer({ queue, processor, consume = {}, backoff = {
   const handler = new WagerMessageHandler(processor, { consumerName: WAGER_CONSUMER_NAME, backoff, log, ...(random ? { random } : {}) });
   const consumer = new QueueConsumer(queue, handler, {
     concurrency: 5, batchSize: 10, waitTimeSeconds: 1, visibilityTimeoutSeconds: 30, shutdownTimeoutMs: 2000, receiveErrorPauseMs: 100, log,
-    ...consume,
+    ...(observer ? { observer } : {}), ...consume,
   });
   return { consumer, logs };
 }

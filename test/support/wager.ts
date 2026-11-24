@@ -39,8 +39,8 @@ export function reversalPayload(
 export const defaultKey = (payload: Pick<WagerPayload, 'providerId' | 'externalTransactionId'>): string =>
   `${payload.providerId}:${payload.externalTransactionId}`;
 
-export const submit = (api: Api, payload: unknown, key: string | undefined) =>
-  api.call('POST', '/wagering/transactions', payload, key === undefined ? {} : { 'idempotency-key': key });
+export const submit = (api: Api, payload: unknown, key: string | undefined, headers: Record<string, string> = {}) =>
+  api.call('POST', '/wagering/transactions', payload, { ...(key === undefined ? {} : { 'idempotency-key': key }), ...headers });
 
 /** Abre uma wallet pela API real e devolve os ids. */
 export async function openWallet(api: Api, balance: string, playerId: string = uuid()): Promise<{ walletId: string; playerId: string }> {

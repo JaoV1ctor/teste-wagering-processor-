@@ -18,15 +18,20 @@ import { SqsEventPublisher } from './infrastructure/messaging/sqs-event-publishe
 import { SqsMessageQueue } from './infrastructure/messaging/sqs-message-queue';
 import { DEFAULT_LOCK_TIMEOUT_MS, MikroOrmUnitOfWork } from './infrastructure/persistence/mikro-orm-unit-of-work';
 import { describeError, logJson } from './infrastructure/observability/json-log';
+import { Metrics } from './infrastructure/observability/metrics';
+import { ObservedProcessing } from './infrastructure/observability/observed-processing';
 import { createOrmConfig } from './infrastructure/persistence/orm.config';
 import { PollingWorker } from './infrastructure/workers/polling-worker';
 import { HttpExceptionFilter } from './interface/http/http-exception.filter';
+import { METRICS, MetricsController } from './interface/http/metrics.controller';
 import { WageringController } from './interface/http/wagering.controller';
 import { WalletsController } from './interface/http/wallets.controller';
 import { QueueConsumer } from './interface/sqs/queue-consumer';
 import { WAGER_CONSUMER_NAME, WagerMessageHandler } from './interface/sqs/wager-message-handler';
 
 const ORM = Symbol('ORM');
+const PROCESSING_OBSERVER = Symbol('PROCESSING_OBSERVER');
+const OUTBOX_LAG_GAUGE = Symbol('OUTBOX_LAG_GAUGE');
 const UNIT_OF_WORK = Symbol('UNIT_OF_WORK');
 const SQS_CLIENT = Symbol('SQS_CLIENT');
 const OUTBOX_CONFIG = Symbol('OUTBOX_CONFIG');
@@ -37,26 +42,51 @@ const POLL_INTERVAL_MS = 1000;
 
 /** Composição: os casos de uso são classes puras; o Nest só os instancia com as portas já resolvidas. */
 @Module({
-  controllers: [WalletsController, WageringController],
+  controllers: [WalletsController, WageringController, MetricsController],
   providers: [
     { provide: ORM, useFactory: () => MikroORM.init(createOrmConfig()) },
+    // Um registry por aplicação (não global): ver Metrics. O UnitOfWork o recebe como observador de retries, conflitos e espera de lock.
+    { provide: METRICS, useFactory: () => new Metrics() },
+    { provide: PROCESSING_OBSERVER, inject: [METRICS], useFactory: (metrics: Metrics) => new ObservedProcessing(metrics, logJson) },
     {
       provide: UNIT_OF_WORK,
-      inject: [ORM],
-      useFactory: (orm: MikroORM) =>
-        new MikroOrmUnitOfWork(orm, { lockTimeoutMs: optionalPositiveInt('LOCK_TIMEOUT_MS', DEFAULT_LOCK_TIMEOUT_MS) }),
+      inject: [ORM, METRICS],
+      useFactory: (orm: MikroORM, metrics: Metrics) =>
+        new MikroOrmUnitOfWork(orm, { lockTimeoutMs: optionalPositiveInt('LOCK_TIMEOUT_MS', DEFAULT_LOCK_TIMEOUT_MS), observer: metrics }),
+    },
+    {
+      // O gauge do lag lê o banco no scrape; precisa do UnitOfWork, que por sua vez precisa de Metrics, então é registrado aqui e não no construtor de Metrics.
+      provide: OUTBOX_LAG_GAUGE,
+      inject: [METRICS, UNIT_OF_WORK],
+      useFactory: (metrics: Metrics, uow: UnitOfWork) =>
+        metrics.trackOutboxLag(
+          async () => (await uow.read(({ outbox }) => outbox.oldestPendingAgeMs())) / 1000,
+          (error) => logJson('error', 'outbox_lag_unavailable', describeError(error)),
+        ),
     },
     { provide: CreateWalletUseCase, inject: [UNIT_OF_WORK], useFactory: (uow: UnitOfWork) => new CreateWalletUseCase(uow) },
     { provide: GetWalletUseCase, inject: [UNIT_OF_WORK], useFactory: (uow: UnitOfWork) => new GetWalletUseCase(uow) },
     { provide: ListLedgerUseCase, inject: [UNIT_OF_WORK], useFactory: (uow: UnitOfWork) => new ListLedgerUseCase(uow) },
-    { provide: ProcessWagerTransactionUseCase, inject: [UNIT_OF_WORK], useFactory: (uow: UnitOfWork) => new ProcessWagerTransactionUseCase(uow) },
+    {
+      provide: ProcessWagerTransactionUseCase,
+      inject: [UNIT_OF_WORK, PROCESSING_OBSERVER],
+      useFactory: (uow: UnitOfWork, observer: ObservedProcessing) => new ProcessWagerTransactionUseCase(uow, undefined, undefined, observer),
+    },
     { provide: GetWagerTransactionUseCase, inject: [UNIT_OF_WORK], useFactory: (uow: UnitOfWork) => new GetWagerTransactionUseCase(uow) },
     {
       provide: ReprocessPendingReferencesUseCase,
-      inject: [UNIT_OF_WORK],
-      useFactory: (uow: UnitOfWork) =>
+      inject: [UNIT_OF_WORK, METRICS],
+      useFactory: (uow: UnitOfWork, metrics: Metrics) =>
         new ReprocessPendingReferencesUseCase(uow, {
           onError: (error, { id, walletId }) => logJson('error', 'pending_reference_reprocess_failed', { transactionId: id, walletId, ...describeError(error) }),
+          // Resolvida pelo worker (PROCESSED ou REJECTED): conta como decisão da transação, como a que saiu direto da submissão.
+          onSettled: (transaction) => {
+            metrics.transactionSettled(transaction.status, transaction.kind);
+            logJson('info', 'pending_reference_settled', {
+              correlationId: transaction.id, transactionId: transaction.id, walletId: transaction.walletId, providerId: transaction.providerId,
+              kind: transaction.kind, status: transaction.status, failureCode: transaction.failureCode,
+            });
+          },
         }),
     },
     {
@@ -97,11 +127,11 @@ const POLL_INTERVAL_MS = 1000;
     {
       // Como o worker, só é criado aqui; quem o inicia é o main.ts. Mesmo ProcessWagerTransactionUseCase do HTTP.
       provide: QueueConsumer,
-      inject: [SQS_CLIENT, ProcessWagerTransactionUseCase],
-      useFactory: (client: SQSClient, useCase: ProcessWagerTransactionUseCase) => {
+      inject: [SQS_CLIENT, ProcessWagerTransactionUseCase, METRICS],
+      useFactory: (client: SQSClient, useCase: ProcessWagerTransactionUseCase, metrics: Metrics) => {
         const config = loadWagerConsumerConfig();
         const handler = new WagerMessageHandler(useCase, { consumerName: WAGER_CONSUMER_NAME, backoff: config.backoff, log: logJson });
-        return new QueueConsumer(new SqsMessageQueue(client, config.queues), handler, { ...config.consumer, log: logJson });
+        return new QueueConsumer(new SqsMessageQueue(client, config.queues), handler, { ...config.consumer, log: logJson, observer: metrics });
       },
     },
     { provide: APP_FILTER, useClass: HttpExceptionFilter },

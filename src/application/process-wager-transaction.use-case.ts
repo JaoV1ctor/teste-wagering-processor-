@@ -5,6 +5,7 @@ import { OutboxMessage } from '../domain/outbox-message';
 import { WagerTransaction, type WagerTransactionKind, WagerTransactionStatus } from '../domain/wager-transaction';
 import { IdempotencyConflictError, InboxPayloadConflictError, WalletNotFoundError } from './errors';
 import { integrationEventsFor } from './integration-events';
+import { NO_PROCESSING_OBSERVER, type ProcessingObserver, type ProcessingReport } from './observers';
 import { computePayloadHash } from './payload-hash';
 import type { Repositories, UnitOfWork } from './ports';
 import { settleLocked } from './settle-locked-transaction';
@@ -53,11 +54,20 @@ export class ProcessWagerTransactionUseCase {
     private readonly uow: UnitOfWork,
     private readonly clock: () => Date = () => new Date(),
     private readonly newId: () => string = randomUUID,
+    private readonly observer: ProcessingObserver = NO_PROCESSING_OBSERVER,
   ) {}
 
   async execute(command: ProcessWagerCommand): Promise<ProcessWagerResult>;
   async execute(command: ProcessWagerCommand, origin: MessageOrigin): Promise<ProcessWagerResult | DuplicateMessageResult>;
   async execute(command: ProcessWagerCommand, origin?: MessageOrigin): Promise<ProcessWagerResult | DuplicateMessageResult> {
+    const started = performance.now();
+    const result = await this.run(command, origin);
+    // Depois do commit: o observador nunca participa da transação.
+    this.observer.completed(reportOf(command, origin, result, (performance.now() - started) / 1000));
+    return result;
+  }
+
+  private async run(command: ProcessWagerCommand, origin: MessageOrigin | undefined): Promise<ProcessWagerResult | DuplicateMessageResult> {
     const payloadHash = computePayloadHash({
       providerId: command.providerId, externalTransactionId: command.externalTransactionId, playerId: command.playerId,
       walletId: command.walletId, roundId: command.roundId, gameId: command.gameId, kind: command.kind, money: command.money.toProps(),
@@ -126,6 +136,17 @@ export class ProcessWagerTransactionUseCase {
     for (const event of events) await outbox.add(OutboxMessage.enqueue(event));
     return { transaction, idempotentReplay: false };
   }
+}
+
+function reportOf(
+  command: ProcessWagerCommand,
+  origin: MessageOrigin | undefined,
+  result: ProcessWagerResult | DuplicateMessageResult,
+  durationSeconds: number,
+): ProcessingReport {
+  const context = { providerId: command.providerId, walletId: command.walletId, correlationId: command.correlationId, messageId: origin?.messageId };
+  if ('duplicateMessage' in result) return { outcome: 'duplicate-message', context, durationSeconds };
+  return { outcome: result.idempotentReplay ? 'replay' : 'new', transaction: result.transaction, context, durationSeconds };
 }
 
 /** Mesma chave e mesmo payload é replay; mesma chave com payload diferente é conflito, nunca replay. */
