@@ -92,3 +92,11 @@ export async function ledgerBalance(probe: pg.Pool, walletId: string): Promise<{
   if (!row) throw new Error(`wallet ${walletId} não existe`);
   return { stored: row.stored, rebuilt: row.rebuilt, entries: Number.parseInt(row.entries, 10) };
 }
+
+/**
+ * Isola o teste: transações PENDING_REFERENCE de outros testes (que ninguém resolve) passam a vencer no "infinito" e deixam de ser
+ * reivindicadas. O trigger permite mudar só `next_attempt_at` de uma transação não terminal.
+ */
+export async function parkPendingReferences(probe: pg.Pool): Promise<void> {
+  await probe.query("update wager_transactions set next_attempt_at = 'infinity' where status = 'PENDING_REFERENCE'");
+}

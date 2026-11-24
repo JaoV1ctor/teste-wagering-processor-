@@ -1,6 +1,8 @@
 import { type EntityManager, UniqueConstraintViolationException } from '@mikro-orm/postgresql';
 import { IdempotencyConflictError, WalletAlreadyExistsError } from '../../application/errors';
-import type { LedgerRecord, LedgerRepository, ListLedgerOptions, WagerTransactionRepository, WalletRepository } from '../../application/ports';
+import type {
+  ClaimedPendingReference, LedgerRecord, LedgerRepository, ListLedgerOptions, WagerTransactionRepository, WalletRepository,
+} from '../../application/ports';
 import type { LedgerEntry } from '../../domain/ledger-entry';
 import type { WagerTransaction } from '../../domain/wager-transaction';
 import type { Wallet } from '../../domain/wallet';
@@ -93,6 +95,26 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
       status: e.status, referenceTransactionId: e.referenceTransactionId, failureCode: e.failureCode, observedBalance: e.observedBalance,
       attempts: e.attempts, nextAttemptAt: e.nextAttemptAt, updatedAt: e.updatedAt, processedAt: e.processedAt,
     });
+  }
+
+  /**
+   * O CTE com `FOR UPDATE SKIP LOCKED` trava as linhas escolhidas uma única vez; o UPDATE só as empurra para o fim do lease.
+   * Não toca a wallet: o claim não participa da ordem de locks wallet -> transação -> ledger.
+   */
+  async claimDuePendingReference(now: Date, limit: number, leaseUntil: Date): Promise<ClaimedPendingReference[]> {
+    const claimed = await this.em.execute<{ id: string; wallet_id: string }[]>(
+      `with due as (
+         select id from wager_transactions
+          where status = 'PENDING_REFERENCE' and next_attempt_at <= ?::timestamptz
+          order by next_attempt_at
+          limit ?
+          for update skip locked)
+       update wager_transactions t set next_attempt_at = ?::timestamptz
+         from due where t.id = due.id
+       returning t.id, t.wallet_id`,
+      [now.toISOString(), limit, leaseUntil.toISOString()],
+    );
+    return claimed.map((row) => ({ id: row.id, walletId: row.wallet_id }));
   }
 
   async hasEffectiveReversal(referenceTransactionId: string): Promise<boolean> {

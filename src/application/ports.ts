@@ -15,6 +15,12 @@ export interface WalletRepository {
   saveBalance(wallet: Wallet): Promise<void>;
 }
 
+/** Transação PENDING_REFERENCE reivindicada pelo worker: o `walletId` permite travar a wallet ANTES de reler a transação. */
+export interface ClaimedPendingReference {
+  id: string;
+  walletId: string;
+}
+
 export interface WagerTransactionRepository {
   add(transaction: WagerTransaction): Promise<void>;
   findById(id: string): Promise<WagerTransaction | undefined>;
@@ -28,6 +34,12 @@ export interface WagerTransactionRepository {
    * Só muda as colunas de estado; a identidade é imutável (trigger). Lança se a transação já for terminal. Wallet travada antes.
    */
   update(transaction: WagerTransaction): Promise<void>;
+  /**
+   * Claim por lease (SPEC D7): numa transação curta e SEM wallet, escolhe até `limit` PENDING_REFERENCE vencidas
+   * (`next_attempt_at <= now`) com `FOR UPDATE SKIP LOCKED` e as agenda para `leaseUntil`. Dois workers recebem lotes disjuntos;
+   * se um morrer, a transação volta a ficar elegível quando o lease vencer. O processamento acontece depois, fora desta transação.
+   */
+  claimDuePendingReference(now: Date, limit: number, leaseUntil: Date): Promise<ClaimedPendingReference[]>;
   /** Existe REFUND/ROLLBACK PROCESSED que reverte `referenceTransactionId`? (README §7 regra 4; SPEC §3.1). Só reversão efetiva conta. */
   hasEffectiveReversal(referenceTransactionId: string): Promise<boolean>;
   findByIdempotencyKey(idempotencyKey: string): Promise<WagerTransaction | undefined>;
