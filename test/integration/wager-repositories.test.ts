@@ -6,10 +6,11 @@ import { MikroORM } from '@mikro-orm/postgresql';
 import { CreateWalletUseCase } from '../../src/application/create-wallet.use-case';
 import { IdempotencyConflictError } from '../../src/application/errors';
 import { Money } from '../../src/domain/money';
-import { WagerTransaction, WagerTransactionKind } from '../../src/domain/wager-transaction';
+import { WagerTransaction, WagerTransactionKind, WagerTransactionStatus } from '../../src/domain/wager-transaction';
 import type { Wallet } from '../../src/domain/wallet';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { createOrmConfig } from '../../src/infrastructure/persistence/orm.config';
+import { FailureCode } from '../../src/domain/failure-code';
 import { createProbe, ensureSchema } from '../support/db';
 
 const probe = createProbe(2);
@@ -133,5 +134,84 @@ describe('WalletRepository.lockWallet', () => {
 
     const { rows } = await probe.query('select balance::text, version from wallets where id = $1', [wallet.id]);
     expect(rows).toEqual([{ balance: '105.00', version: 2 }]);
+  });
+});
+
+/** REFUND com referência por id externo, ainda sem a transação referenciada: nasce PENDING e é parqueada como PENDING_REFERENCE. */
+function pendingRefund(wallet: Wallet, referenceExternalTransactionId: string, now: Date, nextAttemptAt: Date): WagerTransaction {
+  const tx = WagerTransaction.create({
+    id: uuid(), providerId: 'provider-b', externalTransactionId: `e-${uuid()}`, idempotencyKey: `k-${uuid()}`, payloadHash: 'e'.repeat(64),
+    walletId: wallet.id, playerId: wallet.playerId, roundId: 'r', gameId: 'g', kind: WagerTransactionKind.Refund, money: brl('1.00'),
+    referenceExternalTransactionId, now,
+  });
+  tx.markPendingReference(nextAttemptAt, now);
+  return tx;
+}
+
+describe('WagerTransactionRepository.update', () => {
+  test('PENDING_REFERENCE -> PROCESSED: grava estado final, referência, saldo observado e tentativas; a identidade não muda', async () => {
+    const wallet = await openWallet('10.00');
+    const referenced = finishedLoss(wallet, `k-${uuid()}`, `e-${uuid()}`);
+    const refund = pendingRefund(wallet, referenced.externalTransactionId, new Date(), new Date(Date.now() + 1000));
+    await uow.run(async ({ transactions }) => {
+      await transactions.addIdempotent(referenced);
+      await transactions.addIdempotent(refund);
+    });
+
+    const at = new Date();
+    await uow.run(async ({ transactions }) => {
+      const loaded = await transactions.findById(refund.id);
+      if (!loaded) throw new Error('sumiu');
+      loaded.markProcessed({ observedBalance: brl('10.00'), at, referenceTransactionId: referenced.id });
+      await transactions.update(loaded);
+    });
+
+    const after = await uow.read(({ transactions }) => transactions.findById(refund.id));
+    expect(after?.status).toBe(WagerTransactionStatus.Processed);
+    expect(after?.referenceTransactionId).toBe(referenced.id);
+    expect(after?.observedBalance?.toString()).toBe('10.00');
+    expect(after?.processedAt?.getTime()).toBe(at.getTime());
+    expect(after?.attempts).toBe(1);
+    expect(after?.payloadHash).toBe(refund.payloadHash);
+    expect(after?.idempotencyKey).toBe(refund.idempotencyKey);
+  });
+
+  test('transação terminal não aceita update: o trigger do banco recusa (o domínio já não permite, o schema garante)', async () => {
+    const wallet = await openWallet('10.00');
+    const finished = finishedLoss(wallet, `k-${uuid()}`, `e-${uuid()}`);
+    await uow.run(({ transactions }) => transactions.addIdempotent(finished));
+
+    const forged = WagerTransaction.rehydrate({ ...finished.toState(), status: WagerTransactionStatus.Rejected, failureCode: FailureCode.InsufficientBalance, processedAt: undefined });
+    await expect(uow.run(({ transactions }) => transactions.update(forged))).rejects.toThrow(/terminal/);
+  });
+});
+
+describe('WagerTransactionRepository.hasEffectiveReversal', () => {
+  test('só reversão PROCESSED conta: REJECTED e PENDING_REFERENCE não; sem reversão, false', async () => {
+    const wallet = await openWallet('10.00');
+    const referenced = finishedLoss(wallet, `k-${uuid()}`, `e-${uuid()}`);
+    const rejected = pendingRefund(wallet, referenced.externalTransactionId, new Date(), new Date());
+    await uow.run(async ({ transactions }) => {
+      await transactions.addIdempotent(referenced);
+      await transactions.addIdempotent(rejected);
+    });
+    const has = () => uow.read(({ transactions }) => transactions.hasEffectiveReversal(referenced.id));
+    expect(await has()).toBe(false);
+
+    await uow.run(async ({ transactions }) => {
+      const loaded = await transactions.findById(rejected.id);
+      loaded?.reject(FailureCode.AmountMismatch, brl('10.00'), new Date());
+      if (loaded) await transactions.update(loaded);
+    });
+    expect(await has()).toBe(false);
+
+    const effective = pendingRefund(wallet, referenced.externalTransactionId, new Date(), new Date());
+    await uow.run(async ({ transactions }) => {
+      await transactions.addIdempotent(effective);
+      const loaded = await transactions.findById(effective.id);
+      loaded?.markProcessed({ observedBalance: brl('10.00'), at: new Date(), referenceTransactionId: referenced.id });
+      if (loaded) await transactions.update(loaded);
+    });
+    expect(await has()).toBe(true);
   });
 });

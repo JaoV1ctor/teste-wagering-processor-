@@ -189,7 +189,7 @@ describe('POST /wagering/transactions — validação (400)', () => {
 
   test.each([
     ['OPENING', { kind: 'OPENING' }],
-    ['REFUND (Fase 3)', { kind: 'REFUND' }],
+    ['REFUND sem referenceExternalTransactionId', { kind: 'REFUND' }],
     ['valor zero', { money: { amount: '0.00', currency: 'BRL' } }],
     ['3 casas decimais', { money: { amount: '10.005', currency: 'BRL' } }],
     ['valor number', { money: { amount: 10, currency: 'BRL' } }],
@@ -211,15 +211,6 @@ describe('POST /wagering/transactions — validação (400)', () => {
       expect(await rows('select 1 from wager_transactions where provider_id = $1 and external_transaction_id = $2', [payload.providerId, payload.externalTransactionId])).toHaveLength(0);
     },
   );
-
-  test('referenceExternalTransactionId em WIN: 400 explicando que ainda não é suportado, e nada é persistido', async () => {
-    const wallet = await openWallet(api, '100.00');
-    const payload = { ...wagerPayload(wallet, { kind: 'WIN' }), referenceExternalTransactionId: 'bet-1' };
-    const res = await submit(api, payload, 'k');
-    expect(res.status).toBe(400);
-    expect(JSON.stringify(res.body.details)).toMatch(/referenceExternalTransactionId/);
-    expect(await rows('select 1 from wager_transactions where wallet_id = $1 and kind = $2', [wallet.walletId, 'WIN'])).toHaveLength(0);
-  });
 });
 
 describe('GET /wagering/transactions/:transactionId', () => {

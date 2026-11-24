@@ -6,18 +6,32 @@ import { moneySchema } from './wallets.dto';
 
 const identifier = z.string().min(1).max(255);
 
-/** Nesta fase só BET, WIN e LOSS. OPENING é interno (SPEC §3.6); REFUND/ROLLBACK e referências são da Fase 3. */
-export const SubmitTransactionBody = z.strictObject({
-  providerId: identifier,
-  externalTransactionId: identifier,
-  playerId: z.uuid(),
-  walletId: z.uuid(),
-  roundId: identifier,
-  gameId: identifier,
-  kind: z.enum([WagerTransactionKind.Bet, WagerTransactionKind.Win, WagerTransactionKind.Loss]),
-  money: moneySchema.refine((money) => money.isPositive(), { message: 'Valor deve ser maior que zero' }),
-  referenceExternalTransactionId: z.never({ error: 'referenceExternalTransactionId ainda não é suportado' }).optional(),
-});
+const K = WagerTransactionKind;
+const SUBMITTABLE_KINDS = [K.Bet, K.Win, K.Loss, K.Refund, K.Rollback] as const;
+
+/**
+ * OPENING é interno (SPEC §3.6) e não entra. `referenceExternalTransactionId`: obrigatório em REFUND/ROLLBACK (README §7 regra 1),
+ * opcional em WIN/LOSS (SPEC §3.4), proibido em BET e nunca igual ao próprio id. Validado aqui para o erro ser 400, não falha do domínio.
+ */
+export const SubmitTransactionBody = z
+  .strictObject({
+    providerId: identifier,
+    externalTransactionId: identifier,
+    playerId: z.uuid(),
+    walletId: z.uuid(),
+    roundId: identifier,
+    gameId: identifier,
+    kind: z.enum(SUBMITTABLE_KINDS),
+    money: moneySchema.refine((money) => money.isPositive(), { message: 'Valor deve ser maior que zero' }),
+    referenceExternalTransactionId: identifier.optional(),
+  })
+  .check((ctx) => {
+    const { kind, referenceExternalTransactionId: reference, externalTransactionId } = ctx.value;
+    const reject = (message: string) => ctx.issues.push({ code: 'custom', message, input: ctx.value, path: ['referenceExternalTransactionId'] });
+    if ((kind === K.Refund || kind === K.Rollback) && reference === undefined) reject(`${kind} exige referenceExternalTransactionId`);
+    if (kind === K.Bet && reference !== undefined) reject('BET não aceita referenceExternalTransactionId');
+    if (reference !== undefined && reference === externalTransactionId) reject('A transação não pode referenciar a si mesma');
+  });
 
 export const IdempotencyKeyHeader = z.string().trim().min(1).max(255);
 export const TransactionIdParam = z.uuid();

@@ -23,6 +23,13 @@ export interface WagerTransactionRepository {
    * Lança `IdempotencyConflictError` se (provider, externalTransactionId) já existir com outra chave.
    */
   addIdempotent(transaction: WagerTransaction): Promise<boolean>;
+  /**
+   * `UPDATE` do estado de uma transação NÃO terminal já gravada (PENDING_REFERENCE -> PROCESSED | REJECTED | PENDING_REFERENCE).
+   * Só muda as colunas de estado; a identidade é imutável (trigger). Lança se a transação já for terminal. Wallet travada antes.
+   */
+  update(transaction: WagerTransaction): Promise<void>;
+  /** Existe REFUND/ROLLBACK PROCESSED que reverte `referenceTransactionId`? (README §7 regra 4; SPEC §3.1). Só reversão efetiva conta. */
+  hasEffectiveReversal(referenceTransactionId: string): Promise<boolean>;
   findByIdempotencyKey(idempotencyKey: string): Promise<WagerTransaction | undefined>;
   findByProviderExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined>;
 }

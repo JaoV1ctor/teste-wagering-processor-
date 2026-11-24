@@ -31,6 +31,7 @@ export class WageringController {
     const result = await this.processWager.execute({
       idempotencyKey, providerId: body.providerId, externalTransactionId: body.externalTransactionId, playerId: body.playerId,
       walletId: body.walletId, roundId: body.roundId, gameId: body.gameId, kind: body.kind, money: body.money,
+      ...(body.referenceExternalTransactionId === undefined ? {} : { referenceExternalTransactionId: body.referenceExternalTransactionId }),
     });
     response.status(httpStatusFor(result.transaction.status));
     return toSubmitResponse(result);

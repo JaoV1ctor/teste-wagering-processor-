@@ -26,8 +26,12 @@ describe('SubmitTransactionBody', () => {
 
   test.each([
     ['OPENING (interno, SPEC §3.6)', { kind: 'OPENING' }],
-    ['REFUND (Fase 3)', { kind: 'REFUND' }],
-    ['ROLLBACK (Fase 3)', { kind: 'ROLLBACK' }],
+    ['REFUND sem referenceExternalTransactionId (README §7 regra 1)', { kind: 'REFUND' }],
+    ['ROLLBACK sem referenceExternalTransactionId (README §7 regra 1)', { kind: 'ROLLBACK' }],
+    ['BET com referenceExternalTransactionId', { referenceExternalTransactionId: 'x' }],
+    ['referência para a própria transação', { kind: 'REFUND', referenceExternalTransactionId: 'transaction-123' }],
+    ['referenceExternalTransactionId vazio', { kind: 'WIN', referenceExternalTransactionId: '' }],
+    ['referenceExternalTransactionId que não é string', { kind: 'WIN', referenceExternalTransactionId: 7 }],
     ['tipo desconhecido', { kind: 'JACKPOT' }],
     ['valor 0.00 (amount > 0, SPEC §3.5)', { money: { amount: '0.00', currency: 'BRL' } }],
     ['valor negativo', { money: { amount: '-1.00', currency: 'BRL' } }],
@@ -43,11 +47,20 @@ describe('SubmitTransactionBody', () => {
     expect(issues({ ...valid(), ...change }).length).toBeGreaterThan(0);
   });
 
-  test('referenceExternalTransactionId é rejeitada nesta fase, com mensagem que diz o motivo', () => {
-    const found = issues({ ...valid(), kind: 'WIN', referenceExternalTransactionId: 'bet-1' });
+  test.each(['REFUND', 'ROLLBACK'])('%s com referenceExternalTransactionId é aceita e preservada', (kind) => {
+    const parsed = SubmitTransactionBody.parse({ ...valid(), kind, referenceExternalTransactionId: 'bet-1' });
+    expect(parsed.referenceExternalTransactionId).toBe('bet-1');
+  });
+
+  test.each(['WIN', 'LOSS'])('%s aceita referência opcional (SPEC §3.4), com ou sem ela', (kind) => {
+    expect(SubmitTransactionBody.parse({ ...valid(), kind, referenceExternalTransactionId: 'bet-1' }).referenceExternalTransactionId).toBe('bet-1');
+    expect(SubmitTransactionBody.parse({ ...valid(), kind }).referenceExternalTransactionId).toBeUndefined();
+  });
+
+  test('o erro de referência obrigatória aponta o campo', () => {
+    const found = issues({ ...valid(), kind: 'REFUND' });
     expect(found).toHaveLength(1);
     expect(found[0]?.path).toBe('referenceExternalTransactionId');
-    expect(found[0]?.message).toMatch(/não é suportad/i);
   });
 });
 

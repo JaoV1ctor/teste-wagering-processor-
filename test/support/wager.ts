@@ -10,6 +10,8 @@ export interface WagerPayload {
   gameId: string;
   kind: string;
   money: { amount: string; currency: string };
+  /** id no provedor da transação referenciada (REFUND/ROLLBACK; opcional em WIN/LOSS). */
+  referenceExternalTransactionId?: string;
 }
 
 /** Corpo válido de POST /wagering/transactions; `externalTransactionId` único por chamada. */
@@ -18,6 +20,19 @@ export function wagerPayload(wallet: { walletId: string; playerId: string }, ove
     providerId: 'provider-a', externalTransactionId: `ext-${uuid()}`, playerId: wallet.playerId, walletId: wallet.walletId,
     roundId: 'round-1', gameId: 'game-1', kind: 'BET', money: { amount: '25.00', currency: 'BRL' }, ...overrides,
   };
+}
+
+/** REFUND/ROLLBACK de `reference`: mesmo provider, rodada, jogo e valor; `externalTransactionId` novo. `overrides` altera o que o teste quer violar. */
+export function reversalPayload(
+  wallet: { walletId: string; playerId: string },
+  reference: WagerPayload,
+  kind: 'REFUND' | 'ROLLBACK',
+  overrides: Partial<WagerPayload> = {},
+): WagerPayload {
+  return wagerPayload(wallet, {
+    providerId: reference.providerId, roundId: reference.roundId, gameId: reference.gameId, money: reference.money, kind,
+    referenceExternalTransactionId: reference.externalTransactionId, ...overrides,
+  });
 }
 
 /** Chave padrão recomendada pelo README: `{providerId}:{externalTransactionId}`. */

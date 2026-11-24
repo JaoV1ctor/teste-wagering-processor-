@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { Money } from '../domain/money';
-import { settleWager } from '../domain/wager-settlement';
 import { WagerTransaction, type WagerTransactionKind } from '../domain/wager-transaction';
 import { IdempotencyConflictError, WalletNotFoundError } from './errors';
 import { computePayloadHash } from './payload-hash';
 import type { UnitOfWork } from './ports';
+import { settleLocked } from './settle-locked-transaction';
 
 /** Entrada única do caso de uso: HTTP hoje, SQS na Fase 4. Os campos de negócio entram no `payloadHash`; a chave não. */
 export interface ProcessWagerCommand {
@@ -17,6 +17,8 @@ export interface ProcessWagerCommand {
   gameId: string;
   kind: WagerTransactionKind;
   money: Money;
+  /** id no provedor da transação referenciada: obrigatório em REFUND/ROLLBACK, opcional em WIN/LOSS, proibido em BET. */
+  referenceExternalTransactionId?: string;
 }
 
 export interface ProcessWagerResult {
@@ -26,7 +28,8 @@ export interface ProcessWagerResult {
 
 /**
  * SPEC §6. Idempotência decidida pelo banco (UNIQUE), nunca por estado em memória.
- * Ordem de locks e escrita: wallet -> transação -> ledger. A transação nasce PENDING no domínio e é gravada UMA vez, no estado final.
+ * Ordem de locks e escrita: wallet -> transação -> ledger. A transação nasce PENDING no domínio e é gravada UMA vez, no estado final
+ * (PROCESSED, REJECTED ou PENDING_REFERENCE, quando a referência ainda não chegou; o worker a resolve depois).
  */
 export class ProcessWagerTransactionUseCase {
   constructor(
@@ -39,6 +42,7 @@ export class ProcessWagerTransactionUseCase {
     const payloadHash = computePayloadHash({
       providerId: command.providerId, externalTransactionId: command.externalTransactionId, playerId: command.playerId,
       walletId: command.walletId, roundId: command.roundId, gameId: command.gameId, kind: command.kind, money: command.money.toProps(),
+      referenceExternalTransactionId: command.referenceExternalTransactionId,
     });
 
     // Fast-path sem lock: replay não disputa a wallet. Só otimização; quem decide a corrida é o INSERT abaixo.
@@ -54,8 +58,10 @@ export class ProcessWagerTransactionUseCase {
         id: this.newId(), providerId: command.providerId, externalTransactionId: command.externalTransactionId,
         idempotencyKey: command.idempotencyKey, payloadHash, walletId: wallet.id, playerId: command.playerId, roundId: command.roundId,
         gameId: command.gameId, kind: command.kind, money: command.money, now,
+        ...(command.referenceExternalTransactionId === undefined ? {} : { referenceExternalTransactionId: command.referenceExternalTransactionId }),
       });
-      const entry = settleWager(wallet, transaction, { entryId: this.newId(), at: now });
+      // Lê a referência (se houver) e decide; nada é gravado ainda. Com a wallet travada, o que lemos não muda até o commit.
+      const entry = await settleLocked({ transactions }, wallet, transaction, { entryId: this.newId(), at: now });
 
       if (!(await transactions.addIdempotent(transaction))) {
         // Outra requisição com a mesma chave commitou antes: nada do que decidimos em memória foi gravado.

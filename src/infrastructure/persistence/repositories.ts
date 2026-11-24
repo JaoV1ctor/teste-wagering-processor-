@@ -87,6 +87,22 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
     }
   }
 
+  async update(transaction: WagerTransaction): Promise<void> {
+    const e = WagerTransactionMapper.toEntity(transaction);
+    await this.em.nativeUpdate(WagerTransactionEntity, { id: e.id }, {
+      status: e.status, referenceTransactionId: e.referenceTransactionId, failureCode: e.failureCode, observedBalance: e.observedBalance,
+      attempts: e.attempts, nextAttemptAt: e.nextAttemptAt, updatedAt: e.updatedAt, processedAt: e.processedAt,
+    });
+  }
+
+  async hasEffectiveReversal(referenceTransactionId: string): Promise<boolean> {
+    const found = await this.em.execute<unknown[]>(
+      "select 1 from wager_transactions where reference_transaction_id = ? and kind in ('REFUND', 'ROLLBACK') and status = 'PROCESSED' limit 1",
+      [referenceTransactionId],
+    );
+    return found.length > 0;
+  }
+
   async findByIdempotencyKey(idempotencyKey: string): Promise<WagerTransaction | undefined> {
     const entity = await this.em.findOne(WagerTransactionEntity, { idempotencyKey });
     return entity ? WagerTransactionMapper.toDomain(entity) : undefined;

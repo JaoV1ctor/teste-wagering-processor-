@@ -11,6 +11,8 @@ export interface PayloadHashInput {
   gameId: string;
   kind: string;
   money: MoneyProps;
+  /** Entra no hash quando presente; ausente, a chave some do JSON e o hash é o mesmo de antes de existir referência. */
+  referenceExternalTransactionId?: string | undefined;
 }
 
 /** JSON determinístico: chaves ordenadas recursivamente, sem espaços. */
@@ -18,6 +20,7 @@ export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value !== null && typeof value === 'object') {
     const members = Object.entries(value)
+      .filter(([, member]) => member !== undefined)
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([key, member]) => `${JSON.stringify(key)}:${canonicalJson(member)}`);
     return `{${members.join(',')}}`;
