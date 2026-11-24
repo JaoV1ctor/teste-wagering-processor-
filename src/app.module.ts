@@ -8,10 +8,13 @@ import { GetWagerTransactionUseCase } from './application/get-wager-transaction.
 import { ListLedgerUseCase } from './application/list-ledger.use-case';
 import type { UnitOfWork } from './application/ports';
 import { ProcessWagerTransactionUseCase } from './application/process-wager-transaction.use-case';
+import { PublishOutboxUseCase } from './application/publish-outbox.use-case';
 import { DEFAULT_REPROCESS_BATCH_SIZE, ReprocessPendingReferencesUseCase } from './application/reprocess-pending-references.use-case';
 import { optionalPositiveInt } from './infrastructure/env';
 import { loadWagerConsumerConfig } from './infrastructure/messaging/consumer-config';
+import { loadOutboxConfig, type OutboxConfig } from './infrastructure/messaging/outbox-config';
 import { createSqsClient } from './infrastructure/messaging/sqs-client';
+import { SqsEventPublisher } from './infrastructure/messaging/sqs-event-publisher';
 import { SqsMessageQueue } from './infrastructure/messaging/sqs-message-queue';
 import { DEFAULT_LOCK_TIMEOUT_MS, MikroOrmUnitOfWork } from './infrastructure/persistence/mikro-orm-unit-of-work';
 import { describeError, logJson } from './infrastructure/observability/json-log';
@@ -26,8 +29,10 @@ import { WAGER_CONSUMER_NAME, WagerMessageHandler } from './interface/sqs/wager-
 const ORM = Symbol('ORM');
 const UNIT_OF_WORK = Symbol('UNIT_OF_WORK');
 const SQS_CLIENT = Symbol('SQS_CLIENT');
+const OUTBOX_CONFIG = Symbol('OUTBOX_CONFIG');
 /** Dois loops do mesmo tipo (`PollingWorker`): o token distingue qual é qual na injeção. */
 export const PENDING_REFERENCE_WORKER = Symbol('PENDING_REFERENCE_WORKER');
+export const OUTBOX_PUBLISHER_WORKER = Symbol('OUTBOX_PUBLISHER_WORKER');
 const POLL_INTERVAL_MS = 1000;
 
 /** Composição: os casos de uso são classes puras; o Nest só os instancia com as portas já resolvidas. */
@@ -66,6 +71,29 @@ const POLL_INTERVAL_MS = 1000;
         }),
     },
     { provide: SQS_CLIENT, useFactory: createSqsClient },
+    // Lida aqui, na criação do módulo: variável ausente ou inválida derruba o boot.
+    { provide: OUTBOX_CONFIG, useFactory: loadOutboxConfig },
+    {
+      provide: PublishOutboxUseCase,
+      inject: [UNIT_OF_WORK, SQS_CLIENT, OUTBOX_CONFIG],
+      useFactory: (uow: UnitOfWork, client: SQSClient, config: OutboxConfig) =>
+        new PublishOutboxUseCase(uow, new SqsEventPublisher(client, config.queueName), {
+          batchSize: config.batchSize,
+          leaseMs: config.leaseMs,
+          onError: (error, context) => logJson('error', 'outbox_publish_failed', { ...context, ...describeError(error) }),
+        }),
+    },
+    {
+      // Como os outros loops, só é criado aqui; quem o inicia é o main.ts.
+      provide: OUTBOX_PUBLISHER_WORKER,
+      inject: [PublishOutboxUseCase, OUTBOX_CONFIG],
+      useFactory: (useCase: PublishOutboxUseCase, config: OutboxConfig) =>
+        new PollingWorker(useCase, {
+          pollIntervalMs: config.pollIntervalMs,
+          batchSize: config.batchSize,
+          onError: (error) => logJson('error', 'outbox_publisher_pass_failed', describeError(error)),
+        }),
+    },
     {
       // Como o worker, só é criado aqui; quem o inicia é o main.ts. Mesmo ProcessWagerTransactionUseCase do HTTP.
       provide: QueueConsumer,
@@ -83,16 +111,18 @@ export class AppModule implements BeforeApplicationShutdown, OnApplicationShutdo
   constructor(
     @Inject(ORM) private readonly orm: MikroORM,
     @Inject(PENDING_REFERENCE_WORKER) private readonly worker: PollingWorker,
+    @Inject(OUTBOX_PUBLISHER_WORKER) private readonly publisher: PollingWorker,
     @Inject(QueueConsumer) private readonly consumer: QueueConsumer,
     @Inject(SQS_CLIENT) private readonly sqs: SQSClient,
   ) {}
 
   /**
-   * Consumidor e worker param ANTES de o ORM fechar, em paralelo: o consumidor espera as mensagens em andamento (até o timeout) e devolve
-   * o resto à fila; o worker termina a passada atual. Só depois `onApplicationShutdown` fecha o ORM.
+   * Consumidor, worker e publisher param ANTES de o ORM fechar, em paralelo: o consumidor espera as mensagens em andamento (até o timeout)
+   * e devolve o resto à fila; o worker e o publisher terminam a passada atual (o que o publisher já enviou e não marcou volta depois do
+   * lease, como duplicata segura). Só depois `onApplicationShutdown` fecha o ORM e o cliente SQS.
    */
   async beforeApplicationShutdown(): Promise<void> {
-    await Promise.all([this.consumer.stop(), this.worker.stop()]);
+    await Promise.all([this.consumer.stop(), this.worker.stop(), this.publisher.stop()]);
   }
 
   async onApplicationShutdown(): Promise<void> {

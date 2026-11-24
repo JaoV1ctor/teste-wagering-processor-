@@ -1,8 +1,10 @@
-// Cenário #6 (SPEC §10; README §11), com PROCESSOS reais, Postgres e MiniStack reais:
-// dois publishers na mesma outbox => nenhum evento perdido; duplicata segura e contada.
+// Cenários #6 e #8 (SPEC §10; README §11), com PROCESSOS reais, Postgres e MiniStack reais.
+//  #6: dois publishers na mesma outbox => nenhum evento perdido; duplicata segura e contada.
+//  #8: reinício do serviço: commit, o processo morre ANTES de publicar, outro sobe => o evento sai e a consistência final fecha.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID as uuid } from 'node:crypto';
+import { createServer } from 'node:net';
 import { Migrator } from '@mikro-orm/migrations';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { CreateWalletUseCase } from '../../src/application/create-wallet.use-case';
@@ -14,7 +16,7 @@ import { createSqsClient } from '../../src/infrastructure/messaging/sqs-client';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { createOrmConfig } from '../../src/infrastructure/persistence/orm.config';
 import { createProbe, ensureSchema, parkOutbox } from '../support/db';
-import { EventSink, expectEventsConsistentWithLedger, outboxOfWallet } from '../support/events';
+import { EventSink, expectEventsConsistentWithLedger, outboxOfTransaction, outboxOfWallet, typesOf } from '../support/events';
 import { newQueues, type TestQueues, waitFor } from '../support/sqs';
 
 const probe = createProbe(4);
@@ -143,4 +145,93 @@ describe('#6 dois publishers concorrentes na mesma outbox', () => {
     expect(await countUnpublished(walletIds)).toBe(0);
     for (const walletId of walletIds) await expectEventsConsistentWithLedger(probe, walletId);
   }, 90_000);
+});
+
+describe('#8 reinício do serviço', () => {
+  const freePort = (): Promise<number> =>
+    new Promise((resolve, reject) => {
+      const server = createServer();
+      server.once('error', reject);
+      server.listen(0, () => {
+        const { port } = server.address() as { port: number };
+        server.close(() => resolve(port));
+      });
+    });
+
+  /** O serviço de verdade: `bun run src/main.ts` (HTTP + consumidor + workers + publisher), como em produção. */
+  async function startService(pollMs: number): Promise<{ proc: ChildProcess; url: string; stderr: () => string; exited: Promise<void> }> {
+    const port = await freePort();
+    const proc = spawn(process.execPath, ['run', 'src/main.ts'], {
+      cwd: process.cwd(), stdio: ['ignore', 'ignore', 'pipe'],
+      env: {
+        ...process.env, PORT: String(port), SQS_WAGER_QUEUE_NAME: queues.names.queueName, SQS_WAGER_DLQ_NAME: queues.names.deadLetterQueueName,
+        SQS_EVENTS_QUEUE_NAME: queues.eventsQueueName, OUTBOX_POLL_INTERVAL_MS: String(pollMs),
+      },
+    });
+    let stderr = '';
+    proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    const exited = new Promise<void>((resolve) => proc.on('close', () => resolve()));
+    const url = `http://localhost:${port}`;
+    await waitFor('serviço no ar', async () => {
+      if (proc.exitCode !== null) throw new Error(`serviço morreu ao subir: ${stderr.slice(0, 500)}`);
+      return fetch(`${url}/wallets/${uuid()}`).then(() => true, () => false);
+    }, 30_000);
+    return { proc, url, stderr: () => stderr, exited };
+  }
+
+  test('commit, SIGKILL antes de publicar, novo serviço sobe => o evento é publicado e wallet == ledger == eventos', async () => {
+    await parkOutbox(probe);
+    const sink = new EventSink(sqs, queues.eventsUrl);
+    await sink.collect();
+    sink.received.length = 0;
+
+    // Instância A: o publisher dela só volta a rodar em 1 h; o que ela commita fica no outbox, sem publicar.
+    const a = await startService(3_600_000);
+    const call = async (base: string, method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => {
+      const res = await fetch(`${base}${path}`, { method, headers: { 'content-type': 'application/json', ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      return { status: res.status, body: (await res.json()) as any };
+    };
+    const playerId = uuid();
+    const wallet = await call(a.url, 'POST', '/wallets', { playerId, initialBalance: { amount: '100.00', currency: 'BRL' } });
+    expect(wallet.status).toBe(201);
+    const walletId = wallet.body.id as string;
+    const externalTransactionId = `ext-${uuid()}`;
+    const bet = {
+      providerId: 'provider-a', externalTransactionId, playerId, walletId, roundId: 'r', gameId: 'g', kind: 'BET', money: { amount: '30.00', currency: 'BRL' },
+    };
+    const headers = { 'idempotency-key': `provider-a:${externalTransactionId}`, 'x-correlation-id': 'corr-restart' };
+    const first = await call(a.url, 'POST', '/wagering/transactions', bet, headers);
+    expect(first.status).toBe(201);
+
+    // Commit feito, nada publicado.
+    const before = await outboxOfTransaction(probe, first.body.transactionId);
+    expect(typesOf(before)).toEqual(['WagerTransactionProcessed', 'WalletBalanceChanged']);
+    expect(before.every((row) => row.published_at === null)).toBe(true);
+    await sink.collect();
+    expect(sink.received).toEqual([]);
+
+    // O processo morre. Sem SIGTERM, sem shutdown gracioso: SIGKILL.
+    a.proc.kill('SIGKILL');
+    await a.exited;
+
+    // Outra instância sobe e assume.
+    const b = await startService(200);
+    try {
+      await sink.waitUntil('os 2 eventos publicados pela nova instância', (s) => s.uniqueIds.size >= 2);
+      expect(sink.uniqueIds).toEqual(new Set(before.map((row) => row.id)));
+      expect(sink.received.every((r) => r.envelope.correlationId === 'corr-restart')).toBe(true);
+      await waitFor('published_at gravado', async () => (await outboxOfTransaction(probe, first.body.transactionId)).every((row) => row.published_at !== null));
+
+      // Consistência final: saldo == ledger == eventos; e a idempotência sobreviveu ao reinício (estado só no banco).
+      await expectEventsConsistentWithLedger(probe, walletId);
+      const replay = await call(b.url, 'POST', '/wagering/transactions', bet, headers);
+      expect(replay).toMatchObject({ status: 201, body: { transactionId: first.body.transactionId, idempotentReplay: true } });
+      expect(await outboxOfTransaction(probe, first.body.transactionId)).toHaveLength(2); // o replay não gerou evento
+      await sink.collect();
+      expect(sink.received).toHaveLength(2); // e a fila não recebeu mais nada
+    } finally {
+      b.proc.kill('SIGKILL');
+      await b.exited;
+    }
+  }, 120_000);
 });
