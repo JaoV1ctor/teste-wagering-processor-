@@ -210,7 +210,7 @@ do repositório do ledger; o banco continua real.
 - `POST /wallets` não é idempotente por chave: repetir a mesma requisição devolve `409`, não a wallet original (o README trata a duplicata como conflito).
 - Os ids de wallet são UUID v4 gerados no servidor; o exemplo do README usa v7. Sem impacto funcional.
 - `limit` acima do teto é reduzido silenciosamente em vez de rejeitado.
-- O log de erros 5xx é mínimo (tipo, mensagem e stack, nunca o corpo); o formato estruturado com `correlationId` entra na Fase 6.
+- O log de erros 5xx era mínimo nesta fase (tipo, mensagem e stack, nunca o corpo). **Superado na Fase 6**: JSON único com `correlationId` e sem a mensagem de erros do driver (ver "Logs").
 - Leituras (`GET`) não travam a wallet: devolvem o último estado commitado, o que é o esperado para consulta.
 - O banco de testes acumula linhas entre execuções (UUIDs aleatórios; sem colisão).
 - Lock da wallet (`FOR UPDATE` do ORM ou `FOR NO KEY UPDATE` em SQL): decidido na Fase 2.
@@ -315,7 +315,7 @@ Controle negativo: trocando `lockWallet` por uma leitura sem lock, 4 dos 5 teste
 - `em.execute` interpola no cliente (ver acima). Na Fase 2, um `WIN` que levaria o saldo acima do limite de `NUMERIC(19,2)` virava `500`. **Corrigido na Fase 3**: `REJECTED/BALANCE_LIMIT_EXCEEDED` (422).
 - O `providerId` `internal` não é reservado; só colidiria com identidades `opening:{walletId}`, e o `UNIQUE` já barra a colisão.
 - **Resolvido na Fase 5**: os eventos entram no outbox como último passo da mesma transação e um publisher separado os envia depois do commit (ver "Fase 5").
-- Métricas de conflito de lock e de duração (`wager_lock_conflicts_total`, `wager_wallet_lock_wait_seconds`) e logs estruturados com `correlationId` são da Fase 6.
+- Métricas de conflito de lock e de duração (`wager_lock_conflicts_total`, `wager_wallet_lock_wait_seconds`) e logs estruturados com `correlationId` **entraram na Fase 6** (ver "Métricas" e "Logs").
 
 ---
 
@@ -451,12 +451,12 @@ Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) em todos 
 ### Limitações e pontos em aberto
 
 - **Resolvido na Fase 5**: `PendingReference`, `Rejected`, `Processed` e `BalanceChanged` são gravados no mesmo `uow.run`, como último passo, tanto na submissão quanto no reprocesso do worker.
-- O limite do worker é constante no domínio, não configurável. Medir o atraso real de referências (histograma) permitiria ajustá-lo com dados; fica para a Fase 6.
+- O limite do worker é constante no domínio, não configurável. Medir o atraso real de referências (histograma) permitiria ajustá-lo com dados; **a Fase 6 não incluiu esse histograma** (só conta as transações resolvidas pelo worker em `wager_transactions_total`), então o ajuste continua por estimativa.
 - O worker processa o lote em sequência. Uma wallet travada atrasa o lote por até ~9 s (3 tentativas de `lock_timeout`); a transação afetada volta após o lease, e as demais seguem. Paralelizar por wallet é possível e não foi necessário.
 - Sem ordem garantida entre pendências da mesma wallet: duas reversões pendentes da mesma `BET` são avaliadas na ordem do claim (`next_attempt_at`); qualquer uma pode ser a efetiva, e a outra é `ALREADY_REVERSED`. A regra "no máximo uma" vale; qual delas vence não é especificado.
 - Agendamento e lease usam o relógio da aplicação. Entre instâncias, um desvio de relógio desloca os vencimentos em segundos, o que não afeta correção (a exclusão mútua é do lock e do claim, não do relógio).
 - `GET` de uma transação `PENDING_REFERENCE` devolve `balance: null` (não há saldo observado ainda).
-- O log do worker é o mínimo da Fase 3 (JSON de uma linha em stdout/stderr); `correlationId`, métricas de pendências e de lag entram na Fase 6.
+- O log do worker (`pending_reference_settled`, com `transactionId`, `walletId`, `providerId`, `status`) e a contagem por status entraram na Fase 6; não há métrica própria do tempo de espera por referência.
 - Se a referência nunca chegar, a linha vira `REJECTED` em ~4 min: a tabela não acumula pendências eternas, mas o provedor precisa reagir ao `REFERENCE_NOT_FOUND`.
 
 
@@ -576,7 +576,7 @@ Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) em todos 
 - **Não verificado no MiniStack:** janela de 5 minutos da deduplicação FIFO (a DLQ confia nela para não duplicar o envio quando o worker morre entre o `SendMessage` e o ack); invalidação de `ReceiptHandle` antigo depois de nova entrega (por isso uma mensagem devolvida no shutdown não é confirmada depois); cotas de mensagens em voo (120 mil em FIFO); throughput por grupo; semântica de `ChangeMessageVisibility` acima do `VisibilityTimeout` restante. O redrive para a DLQ no 6º `ReceiveMessage` (5 recebimentos sem `DeleteMessage`) foi observado.
 - **`visibilityTimeout` fixo de 30 s por recebimento.** Um processamento mais longo que isso seria reentregue enquanto roda; o `lock_timeout` de 3 s × 3 tentativas mantém o pior caso em ~9 s. Não há heartbeat que estenda a visibilidade.
 - **Mensagem devolvida no shutdown que ainda executa** pode terminar depois de `stop()` e depois do ORM fechar (se o processo continuar vivo); o resultado é seguro (commit válido ou rollback), mas gera erro nos logs. O orquestrador mata o processo logo depois.
-- **Sem métricas nem `correlationId` além do `messageId` nos logs** (Fase 6). `wager_dlq_messages_total` e `wager_retries_total` ainda não existem.
+- **Métricas e logs com ids da transação** entraram na Fase 6: `wager_dlq_messages_total` e `wager_retries_total{source="queue"}` existem; o `redrive` feito pelo próprio SQS (`maxReceiveCount`) não passa pelo consumidor e **não** é contado.
 - **Wallet criada depois da primeira mensagem** é tratada como erro permanente (`WALLET_NOT_FOUND`): a wallet só nasce por HTTP, e uma mensagem que a antecede indica problema do produtor. Se a operação quiser tolerar essa corrida, basta reprocessar a DLQ.
 
 
@@ -708,7 +708,7 @@ Invariante final (`wallet.balance == saldo reconstruído pelo ledger`, mais "tod
 
 ### Limitações e pontos em aberto
 
-- **Evento que o SQS nunca aceita** (por exemplo, acima de 256 KB) é retentado para sempre a cada ~60 s. Os eventos têm ~1 KB; não há DLQ do outbox. A observabilidade (log `outbox_publish_failed` com `eventId` e `attempts`, métrica de lag) é da Fase 6.
+- **Evento que o SQS nunca aceita** (por exemplo, acima de 256 KB) é retentado para sempre a cada ~60 s. Os eventos têm ~1 KB; não há DLQ do outbox. A observabilidade (log `outbox_publish_failed` com `eventId` e `attempts`, e o gauge `wager_outbox_lag_seconds`) entrou na Fase 6; não há alerta, só a métrica.
 - **Sem retenção**: `outbox_messages` só cresce. O índice parcial `outbox_due_idx` mantém o claim barato, mas uma rotina de purga dos publicados (por `published_at`) é trabalho futuro.
 - **Relógio da aplicação** em lease, backoff e `published_at`. Um desvio entre instâncias desloca vencimentos em segundos; não afeta a correção (a exclusão mútua é do claim, não do relógio), só pode causar uma duplicata a mais.
 - **Vazão por instância** ≈ 1/latência do `SendMessage` (publicação sequencial); escala com mais instâncias. `SendMessageBatch` foi descartado (resposta parcial por item complica o tratamento de falha sem necessidade medida).
@@ -720,6 +720,9 @@ Invariante final (`wallet.balance == saldo reconstruído pelo ledger`, mais "tod
 ---
 
 ## Fase 6 — Reconciliação, health, métricas e logs
+
+**Objetivo.** Tornar o serviço operável e auditável sem tocar nas garantias de correção: provar por API que saldo e ledger conferem (e **sinalizar** quando não conferem, sem corrigir), dizer se o processo e suas dependências estão de pé,
+expor métricas e emitir logs que permitam seguir uma transação de ponta a ponta sem vazar payload (README §9 e §12; SPEC §8.4). A fase abre com um ajuste da Fase 5 (eventos da abertura da wallet).
 
 ### Ajuste da Fase 5: eventos da abertura da wallet (`OPENING`)
 
@@ -735,3 +738,137 @@ reaproveitando `integrationEventsFor` (a mesma função pura do HTTP, SQS e work
 - **Alternativa descartada: um evento próprio `WalletOpened`.** Criaria um tipo novo fora do contrato do README (§11) e obrigaria o consumidor a tratar dois caminhos para o mesmo conceito (saldo mudou). Reaproveitar os eventos existentes mantém o contrato.
 - **Compatibilidade.** O consumidor que já deduplica por `eventId` e ordena por `walletVersion` não muda; ele passa a ver a `version` 1.
 - A invariante dos testes (`expectEventsConsistentWithLedger`) deixou de excluir a abertura: todo lançamento, inclusive o `OPENING`, tem o seu `WalletBalanceChanged`.
+
+### Visão geral: como a observabilidade se liga ao código
+
+O domínio e os casos de uso **não conhecem** log nem métrica. Cada ponto que produz um dado chama uma **porta de observação** pequena, sempre **depois do commit** e sem poder alterar o fluxo;
+a camada de infraestrutura implementa a porta com `prom-client` e `logJson`. Nenhuma garantia de correção (idempotência, lock, outbox) depende dessas portas.
+
+| Porta | Quem chama | Implementação | Alimenta |
+| --- | --- | --- | --- |
+| `ProcessingObserver.completed(report)` | `ProcessWagerTransactionUseCase` (HTTP e SQS), depois do commit | `ObservedProcessing` | `wager_transactions_total`, `wager_duplicates_total`, `wager_processing_duration_seconds` e o log do resultado |
+| `ReprocessOptions.onSettled(transaction)` | worker de `PENDING_REFERENCE`, depois do commit, só quando passa a `PROCESSED`/`REJECTED` | `app.module.ts` | `wager_transactions_total` e o log `pending_reference_settled` |
+| `PersistenceObserver` (`transientFailure`, `walletLockWaited`) | `MikroOrmUnitOfWork` (retry transitório) e `lockWallet` | `Metrics` | `wager_retries_total{source="database"}`, `wager_lock_conflicts_total`, `wager_wallet_lock_wait_seconds` |
+| `QueueObserver` (`deadLettered`, `retried`) | `QueueConsumer`, depois de copiar para a DLQ / devolver à fila | `Metrics` | `wager_dlq_messages_total`, `wager_retries_total{source="queue"}` |
+| `ReconciliationObserver.checked(result)` | `ReconcileWalletUseCase` | `ObservedReconciliation` | `wager_reconciliation_divergence_total` e o log da reconciliação |
+| gauge com `collect()` assíncrono | o scrape de `GET /metrics` | `Metrics.trackOutboxLag` | `wager_outbox_lag_seconds` |
+
+### Logs
+
+**Um único ponto de saída.** `logJson(level, message, fields)` (`infrastructure/observability/json-log.ts`) escreve **uma linha JSON** por chamada: `info` e `warn` em stdout, `error` em stderr, com `level`, `time` (ISO-8601) e `message`.
+Nada mais escreve em stdout/stderr: o logger do Nest (`JsonLogger`, passado em `NestFactory.create`) e o filtro de exceção usam o mesmo `logJson`, e o ESLint tem `no-console: error` em `src/` e `scripts/` (`bun run check` falha se alguém usar `console.*`).
+`main.ts` também registra falha de boot pelo `logJson` (`bootstrap_failed`) em vez de deixar o runtime imprimir texto.
+
+**Campos (README §12).** `correlationId` (header `x-correlation-id` no HTTP, até 128 caracteres; `messageId` no SQS; na falta, o id da transação), `messageId`, `transactionId`, `walletId`, `providerId`, mais o resultado (`kind`, `status`, `failureCode`).
+
+| `message` | Nível | Quando | Campos além de `level`/`time` |
+| --- | --- | --- | --- |
+| `wager_transaction_processed` | info | transação decidida agora (PROCESSED, REJECTED ou PENDING_REFERENCE), HTTP ou SQS | `correlationId`, `messageId`*, `transactionId`, `walletId`, `providerId`, `kind`, `status`, `failureCode`* |
+| `wager_transaction_replayed` | info | replay de idempotência | idem |
+| `wager_message_duplicate` | info | o inbox já tinha a mensagem | `correlationId`, `messageId`, `walletId`, `providerId` |
+| `pending_reference_settled` | info | o worker resolveu uma pendência | idem da 1ª linha, sem `messageId` |
+| `wallet_reconciled` / `wallet_reconciliation_diverged` | info / **error** | reconciliação | `correlationId`*, `walletId`, `checkedEntries`, e `difference` na divergência |
+| `wager_message_transient_failure` / `wager_message_permanent_failure` | error | falha ao processar uma mensagem | `correlationId`, `messageId`, `receiveCount`, `errorName`..., `reason`/`delaySeconds` |
+| `request_failed` | error | resposta 5xx | `status`, `correlationId`*, `errorName`... |
+| `readiness_check_failed` | warn | uma dependência não respondeu no readiness | `dependency`, `errorName`... |
+| `outbox_publish_failed`, `outbox_lag_unavailable`, `sqs_*`, `pending_reference_*_failed` | error | falhas dos workers e do consumidor | ids do item e `errorName`... |
+
+\* só quando existe.
+
+**O que nunca entra em log.** Corpo da requisição ou da mensagem, `playerId`, valores (`amount`, saldos), `roundId`, `gameId`, `Idempotency-Key`, `externalTransactionId`. O log carrega só identificadores internos e o resultado; a divergência de reconciliação loga a **diferença**, não os saldos.
+Os testes de `test/integration/logs.test.ts` inspecionam a saída real (aplicação real em HTTP, 5xx com o Postgres fora do ar, e o handler real do SQS): cada linha é JSON, os campos esperados estão presentes e nenhum dos valores acima aparece.
+
+**Mensagem de erro do driver não é logada.** Esta foi a parte menos óbvia: o `message` de um erro do MikroORM/driver pode trazer o SQL com os **valores** interpolados (`insert into wallets ... values ('<playerId>', ...)`). Por isso `describeError` loga `errorName` e `errorCode` (SQLSTATE ou código de rede)
+e **só mantém `errorMessage` de erros sem `code`**, isto é, os que o próprio serviço lança com texto escrito por nós (ids, nunca valores). Erro embrulhado mostra `causeName`/`causeCode`; valor que não é `Error` loga só o tipo.
+Alternativa descartada: filtrar o SQL da mensagem por regex (frágil: qualquer formato novo vaza). Custo da regra adotada: um 5xx de banco perde a mensagem livre; o `errorCode` e o `errorName` bastam para diagnosticar e o detalhe continua no próprio Postgres.
+
+### Métricas (`GET /metrics`, formato texto do Prometheus)
+
+Biblioteca: **`prom-client` 15.1.3** (Apache-2.0; dependências transitivas `@opentelemetry/api` e `tdigest`/`bintrees`). Única dependência nova da fase. **Verificada no Bun 1.4.4** (counter, gauge com `collect()` assíncrono, histograma e escape de labels, via os testes de integração).
+Alternativa descartada: escrever o formato de exposição à mão (buckets cumulativos, escape de labels e `+Inf` são fáceis de errar e não valem o risco para o avaliador); OpenTelemetry fica fora do escopo (SPEC §1).
+
+| Métrica | Tipo | Labels | O que mede |
+| --- | --- | --- | --- |
+| `wager_transactions_total` | counter | `status`, `kind` | Transações **decididas**: nova (HTTP/SQS) ou resolvida pelo worker. Replay e conflito (409) não contam. |
+| `wager_duplicates_total` | counter | — | Replay de idempotência + mensagem repetida no inbox. |
+| `wager_retries_total` | counter | `source` = `database` \| `queue` | `database`: retry interno de falha transitória (40P01, 40001, 55P03, conexão). `queue`: mensagem devolvida ao SQS com backoff. |
+| `wager_dlq_messages_total` | counter | — | Mensagens que o consumidor copiou para a DLQ (falha permanente). |
+| `wager_lock_conflicts_total` | counter | — | Deadlock (40P01), serialização (40001) e `lock_timeout` (55P03). |
+| `wager_wallet_lock_wait_seconds` | histogram | — | Espera do `SELECT ... FOR NO KEY UPDATE` da wallet, **inclusive quando estoura o `lock_timeout`**. |
+| `wager_processing_duration_seconds` | histogram | — | Duração de uma execução do caso de uso que **terminou com resultado** (nova, replay ou mensagem duplicada). |
+| `wager_outbox_lag_seconds` | gauge | — | Idade do evento não publicado mais antigo; 0 se não há pendente. |
+| `wager_reconciliation_divergence_total` | counter | — | Reconciliações que acharam divergência. |
+
+Os nomes são os da SPEC §8.4. Os buckets (5 ms a 10 s) cobrem uma transação curta (dezenas de ms) e o pior caso do `lock_timeout` (3 s x 3 tentativas). Sem métricas do processo (`process_*`, `nodejs_*`): só as acima, para o `/metrics` ser exatamente o contrato descrito aqui.
+
+Decisões:
+
+1. **`Registry` por aplicação, não o global.** Vários módulos no mesmo processo (testes de integração) não colidem nem somam valores; cada `startApi()` começa do zero e os testes asseguram valores absolutos.
+2. **Labels de cardinalidade fixa** (`status`, `kind`, `source`): nunca `walletId`, `providerId` ou `transactionId` (explodiria a série temporal). Os ids ficam no log.
+3. **`wager_retries_total` com `source`.** O README pede "retries", mas há duas camadas (retry em processo e redelivery do SQS) com custos diferentes. Um rótulo evita somar duas coisas distintas; `sum()` dá o total. Acréscimo à SPEC (que não lista labels para esta métrica).
+4. **`wager_lock_conflicts_total` inclui `lock_timeout` (55P03)**, além do deadlock e da serialização da SPEC: é o sintoma de uma wallet quente e é transitório da mesma forma. Está no texto do `HELP`.
+5. **Lag do outbox é lido no scrape, não guardado.** Um gauge atualizado pelo publisher seria por instância e ficaria velho se o publisher morresse; a consulta (`min(occurred_at)` entre os não publicados, no relógio do banco) vale para o conjunto das instâncias. Se a leitura falhar, a amostra **some** do scrape e `outbox_lag_unavailable` é logado: ausência é honesta, `0` seria mentira.
+6. **Duração só de execuções com resultado.** Erro (404, 409, 503) sobe como exceção e não entra no histograma; a latência de falha é observável pelo status HTTP.
+7. **Transação resolvida pelo worker conta em `wager_transactions_total`** (`PROCESSED`/`REJECTED`, não o reagendamento). Sem isso, toda reversão que esperou a referência ficaria invisível.
+8. **Observar nunca altera o fluxo**: as portas rodam depois do commit; uma falha de métrica não desfaz uma aposta.
+
+### Reconciliação (`POST /wallets/:walletId/reconciliation`)
+
+```
+{ walletId, storedBalance, calculatedBalance, difference, consistent, checkedEntries }     (dinheiro como { amount, currency })
+```
+
+- **O que faz.** Uma única instrução SQL lê `wallets.balance` e `SUM(CREDIT) - SUM(DEBIT)` do ledger daquela wallet, a diferença (`stored - calculated`, **com sinal**) e a contagem de lançamentos. `consistent` é `balance = soma`.
+- **Uma instrução, um snapshot, sem lock.** Wallet e ledger são gravados na mesma transação; um snapshot só enxerga os dois ou nenhum. Duas consultas separadas (ou um lock) seriam erradas ou caras: em `READ COMMITTED` a segunda poderia ver um commit que a primeira não viu e **fabricar uma divergência**.
+  O teste de concorrência reconcilia sem parar durante 40 apostas na mesma wallet e exige 100% de leituras consistentes; trocar a instrução única por duas consultas (mutação, abaixo) faz esse teste falhar nas 3 execuções.
+- **Não corrige.** Divergência vira: resposta `200` com `consistent: false` e a diferença; log `wallet_reconciliation_diverged` (nível `error`, com `walletId`, `correlationId`, `checkedEntries`, `difference`); incremento de `wager_reconciliation_divergence_total`. Nada é escrito.
+  Por quê: o ledger é imutável (triggers) e uma "correção" automática do saldo esconderia a causa (bug, SQL manual, trigger desligado) e quebraria a trilha de auditoria. Corrigir é decisão humana, com lançamento de ajuste próprio, fora do escopo.
+- **Status.** `200` mesmo com divergência (a divergência é o resultado da consulta, não erro da requisição); `404 WALLET_NOT_FOUND` se a wallet não existe; `400 VALIDATION_ERROR` se `walletId` não é UUID; `x-correlation-id` opcional, igual ao das apostas. É `POST` (README) mas **só lê**; não é idempotente no sentido de contagem: cada chamada que acha divergência incrementa a métrica (conta detecções, não wallets distintas).
+- **Teste da divergência (SPEC §11).** `inflateBalance` e `creditLedgerOnly` (`test/support/db.ts`) alteram saldo e ledger por SQL direto. O trigger deferido (`wallets_match_ledger_trg` / `ledger_match_wallet_trg`) é **desligado só dentro de uma transação do teste** (`ALTER TABLE ... DISABLE TRIGGER`, transacional no Postgres)
+  e religado antes do `COMMIT`; um evento que não foi enfileirado com o trigger desligado não dispara depois. Os dois sentidos são provados: saldo maior que o ledger (`+5.00`) e ledger maior que o saldo (`-7.50`, diferença negativa). Depois da reconciliação o teste confere por SQL que **saldo e ledger continuam como estavam** (não corrigiu), que uma 2ª chamada vê a mesma divergência e que a métrica e o log foram emitidos.
+  Ao final, `healFromLedger` realinha o saldo por um `UPDATE` legítimo (triggers ligados) para o banco compartilhado não ficar com lixo. O `ALTER TABLE ... DISABLE TRIGGER` exige ser dono da tabela e trava escritas na tabela até o commit; é recurso **exclusivo dos testes**.
+
+### Health (`GET /health/live`, `GET /health/ready`)
+
+- **`live`** responde `200 {"status":"ok"}` sem olhar dependência: reiniciar o processo não conserta um Postgres fora do ar, então liveness não pode depender dele (evitaria reinício em cascata).
+- **`ready`** verifica **Postgres** (`select 1` pelo mesmo pool das requisições: um pool esgotado também reprova) e **SQS** (`GetQueueUrl` das filas de entrada e de eventos: falha com endpoint fora do ar **e** com fila inexistente), **em paralelo**, cada uma com prazo de `HEALTH_CHECK_TIMEOUT_MS` (padrão 2 s).
+  Resposta `200 {"status":"ok","checks":{"postgres":"up","sqs":"up"}}` ou `503 {"status":"unavailable","checks":{...}}` apontando qual caiu. A causa vai para o log (`readiness_check_failed`, `warn`); a resposta não expõe endereço nem mensagem do driver.
+- **Prazo de verdade.** `ReadinessChecker` corre cada verificação contra um timeout (`AbortController` + `Promise.race`): uma verificação que ignora o sinal de cancelamento e nunca resolve também vira `down` no prazo.
+- **Sem estado.** Cada chamada verifica de novo, então a recuperação aparece na chamada seguinte. Sem autenticação (README §9).
+- **Testes sem derrubar a infraestrutura compartilhada.** A aplicação real sobe com `DATABASE_URL` ou `AWS_ENDPOINT_URL` apontando para `127.0.0.1:9` (recusa de conexão de verdade) e o teste confere o `503`, qual dependência está `down`, que `live` segue `200` e que a resposta volta em menos de 4 s. Nenhum mock de Postgres ou SQS.
+
+### Verificação
+
+Postgres e MiniStack **reais**; nenhum teste de integração ou concorrência mocka banco ou fila. A divergência é provocada por SQL direto; o SQS "fora do ar" é um endereço morto.
+
+| Camada | Arquivos | O que prova |
+| --- | --- | --- |
+| Unidade | `observed-processing`, `json-log`, `readiness-checker`, `transient-retry` | O relatório do caso de uso vira métrica + log certos (nova, replay, mensagem duplicada); `logJson` (stdout/stderr, uma linha, `undefined` omitido) e a política do `describeError`; timeout e paralelismo do readiness; `isLockConflict` e o callback `onTransientFailure` (willRetry falso na última tentativa) |
+| Integração | `reconciliation`, `health`, `metrics`, `metrics-lock-conflicts`, `metrics-sqs`, `logs`, `wallet-opening-events` | Reconciliação consistente e divergente (nos dois sentidos), 404/400; readiness com Postgres e/ou SQS mortos; formato Prometheus (HELP/TYPE das 9 métricas, cumulatividade dos buckets) e **valores** depois de aposta processada, duplicata, rejeição, pendência e conflito 409; **deadlock real** (40P01) e **lock_timeout real** (55P03) contados; DLQ, retry e duplicata pelo consumidor SQS real; inspeção da saída do logger; eventos da abertura |
+| Concorrência | `test/concurrency/reconciliation.test.ts` | 40 apostas paralelas na mesma wallet com reconciliações em laço: nenhuma divergência falsa; no fim `consistent`, `checkedEntries = 41` e `wallet == ledger` |
+
+Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) conferida nos testes que mexem em saldo; a reconciliação é, ela própria, essa conta exposta por API.
+
+**Controles negativos** (mutação temporária no código de produção, revertida):
+
+| Mutação | Resultado |
+| --- | --- |
+| `consistent` sempre `true` na consulta da reconciliação | Falham os 3 testes de divergência (a divergência passaria despercebida) |
+| Reconciliação em **duas** consultas (saldo e depois a soma) em vez de uma | Falha o teste de concorrência nas 3 execuções: a segunda consulta vê commits que a primeira não viu e fabrica divergência |
+| Replay não conta duplicata | Falham 1 teste de unidade e 1 de integração (`wager_duplicates_total`) |
+| Readiness sem a verificação do SQS | Falham 2 testes de health (SQS fora do ar; os dois fora do ar) |
+| `describeError` volta a logar a mensagem do driver | Falha o teste de unidade da política (a mensagem trazia o SQL com valores) |
+| Lag do outbox fixo em 0 | Falha o teste do gauge com evento pendente |
+
+### Limitações e pontos em aberto
+
+- **Custo da reconciliação é O(lançamentos da wallet)** por chamada: uma soma sobre todo o ledger dela (índice `le_wallet_seq_idx`). Para uma wallet com milhões de lançamentos seria preciso um checkpoint (soma acumulada até um `seq`, verificada por job) ou executar fora do horário; não há varredura em lote de todas as wallets (a SPEC pede só o endpoint por wallet).
+- **Reconciliar não é periódico.** Nada chama o endpoint sozinho; quem opera decide quando. Um job que reconcilie wallets recentes e alerte pela métrica seria o passo seguinte.
+- **`wager_dlq_messages_total` não vê o redrive do próprio SQS.** Uma mensagem que estoura `maxReceiveCount` é movida pela fila sem passar pelo consumidor. Ver o total na DLQ exigiria `ApproximateNumberOfMessages` (e o MiniStack não é fiel a esse contador, ver Fase 4).
+- **`wager_outbox_lag_seconds` custa uma consulta por scrape** (varre os pendentes; poucos, se o publisher acompanha). Com um backlog enorme, o próprio scrape fica caro. Usa o relógio do banco, enquanto `occurred_at` vem do relógio da aplicação: um desvio entre os dois desloca o valor em segundos.
+- **As métricas são por instância** (cada processo tem o seu registry; contadores zeram no restart). O Prometheus agrega e trata o reset; `wager_outbox_lag_seconds` é global (lê o banco), então toda instância reporta o mesmo valor: não some entre instâncias.
+- **`GET /metrics` e `/health/*` sem autenticação** (README §9 para o health; o `/metrics` segue o mesmo critério): devem ficar na rede interna. `wager_transactions_total` não expõe id algum.
+- **Sem log de acesso HTTP.** Só o resultado de negócio (uma linha por transação decidida ou replay) e as falhas 5xx são logados; 4xx de validação não geram linha (a resposta já diz o motivo e não vale ruído nem risco de eco do payload).
+- **Readiness não olha o consumidor, o worker nem o lag.** Ele diz que as dependências respondem; um consumidor travado por bug não derruba o readiness (a métrica de lag e os logs de erro é que sinalizam). `GetQueueUrl` prova alcance e existência da fila, não a permissão de enviar/receber.
+- **`correlationId` não é guardado na transação** (já registrado na Fase 5): o do reprocesso do worker é o id da transação.
+- **Sem dashboard, alertas nem OpenTelemetry** (non-goals da SPEC §1).
