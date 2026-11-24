@@ -19,7 +19,7 @@ const moneyIsNeverNumber = [
 ];
 
 export default tseslint.config(
-  { ignores: ['node_modules/', 'dist/', 'reference/', 'coverage/'] },
+  { ignores: ['node_modules/', 'dist/', 'coverage/'] },
   ...tseslint.configs.recommended,
   // Corpo das respostas HTTP nos testes é JSON arbitrário: `any` só aqui.
   { files: ['test/**/*.ts'], rules: { '@typescript-eslint/no-explicit-any': 'off' } },
