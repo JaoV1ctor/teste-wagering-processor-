@@ -6,6 +6,9 @@ import { describeError, type logJson } from '../../infrastructure/observability/
 import { type VisibilityBackoffOptions, visibilityBackoffSeconds } from './visibility-backoff';
 import { MalformedMessageError, parseWagerMessage, UnknownMessageTypeError } from './wager-transaction-message';
 
+/** Nome lógico deste consumidor no inbox: todas as instâncias compartilham, por isso a deduplicação vale entre processos. */
+export const WAGER_CONSUMER_NAME = 'wager-transactions-consumer';
+
 /** O que o consumidor precisa do caso de uso; `ProcessWagerTransactionUseCase` satisfaz. */
 export interface WagerProcessor {
   execute(command: ProcessWagerCommand, origin: MessageOrigin): Promise<ProcessWagerResult | DuplicateMessageResult>;

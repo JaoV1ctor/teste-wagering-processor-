@@ -1,9 +1,29 @@
 import { z } from 'zod';
 import type { ProcessWagerCommand } from '../../application/process-wager-transaction.use-case';
+import type { MoneyProps } from '../../domain/money';
 import { checkReferenceRules, wagerFields } from '../http/wagering.dto';
 
 /** README §10. */
 export const WAGER_TRANSACTION_REQUESTED = 'WagerTransactionRequested';
+
+/** Forma da mensagem na fila (README §10), do lado de quem produz: dinheiro sempre como string decimal. */
+export interface WagerTransactionRequested {
+  messageId: string;
+  type: typeof WAGER_TRANSACTION_REQUESTED;
+  occurredAt: string;
+  data: {
+    providerId: string;
+    externalTransactionId: string;
+    idempotencyKey: string;
+    playerId: string;
+    walletId: string;
+    roundId: string;
+    gameId: string;
+    kind: string;
+    money: MoneyProps;
+    referenceExternalTransactionId?: string;
+  };
+}
 
 /** Corpo que nunca poderá ser processado, por mais que seja reentregue. Erro PERMANENTE (DLQ). */
 export class MalformedMessageError extends Error {

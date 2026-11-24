@@ -6,7 +6,8 @@ import {
   SendMessageCommand,
   type SQSClient,
 } from '@aws-sdk/client-sqs';
-import { createQueues, createSqsClient } from '../../scripts/create-queues';
+import { createQueues } from '../../scripts/create-queues';
+import { createSqsClient } from '../../src/infrastructure/messaging/sqs-client';
 
 // MiniStack REAL (docker compose). Filas com prefixo único por execução: não depende de estado anterior.
 const prefix = `t${Date.now()}-`;

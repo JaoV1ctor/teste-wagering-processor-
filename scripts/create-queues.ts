@@ -1,5 +1,5 @@
-import { CreateQueueCommand, GetQueueAttributesCommand, SQSClient } from '@aws-sdk/client-sqs';
-import { requireEnv } from '../src/infrastructure/env';
+import { CreateQueueCommand, GetQueueAttributesCommand, type SQSClient } from '@aws-sdk/client-sqs';
+import { createSqsClient } from '../src/infrastructure/messaging/sqs-client';
 
 /** Cria as filas do desafio. Idempotente: CreateQueue com os mesmos atributos devolve a fila existente. */
 export async function createQueues(client: SQSClient, prefix = ''): Promise<Record<string, { url: string; arn: string }>> {
@@ -25,14 +25,6 @@ export async function createQueues(client: SQSClient, prefix = ''): Promise<Reco
   });
   const events = await create('wager-events', { VisibilityTimeout: '30' });
   return { 'wager-transactions.fifo': main, 'wager-transactions-dlq.fifo': dlq, 'wager-events': events };
-}
-
-export function createSqsClient(): SQSClient {
-  return new SQSClient({
-    endpoint: requireEnv('AWS_ENDPOINT_URL'),
-    region: requireEnv('AWS_REGION'),
-    credentials: { accessKeyId: requireEnv('AWS_ACCESS_KEY_ID'), secretAccessKey: requireEnv('AWS_SECRET_ACCESS_KEY') },
-  });
 }
 
 if (import.meta.main) {
