@@ -1,5 +1,5 @@
 import { type EntityManager, UniqueConstraintViolationException } from '@mikro-orm/postgresql';
-import { WalletAlreadyExistsError } from '../../application/errors';
+import { IdempotencyConflictError, WalletAlreadyExistsError } from '../../application/errors';
 import type { LedgerRecord, LedgerRepository, ListLedgerOptions, WagerTransactionRepository, WalletRepository } from '../../application/ports';
 import type { LedgerEntry } from '../../domain/ledger-entry';
 import type { WagerTransaction } from '../../domain/wager-transaction';
@@ -34,6 +34,20 @@ export class MikroOrmWalletRepository implements WalletRepository {
     const entity = await this.em.findOne(WalletEntity, { id });
     return entity ? WalletMapper.toDomain(entity) : undefined;
   }
+
+  /**
+   * Trava com SQL `?` (o MikroORM interpola e escapa no cliente; não é prepared statement do servidor) e só então relê:
+   * em READ COMMITTED a leitura seguinte já enxerga o commit de quem segurava o lock, e ninguém altera a linha até o fim da transação.
+   */
+  async lockWallet(id: string): Promise<Wallet | undefined> {
+    const locked = await this.em.execute<{ id: string }[]>('select id from wallets where id = ? for no key update', [id]);
+    if (locked.length === 0) return undefined;
+    return this.findById(id);
+  }
+
+  async saveBalance(wallet: Wallet): Promise<void> {
+    await this.em.nativeUpdate(WalletEntity, { id: wallet.id }, { balance: wallet.balance.toString(), version: wallet.version, updatedAt: wallet.updatedAt });
+  }
 }
 
 export class MikroOrmWagerTransactionRepository implements WagerTransactionRepository {
@@ -46,6 +60,40 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
 
   async findById(id: string): Promise<WagerTransaction | undefined> {
     const entity = await this.em.findOne(WagerTransactionEntity, { id });
+    return entity ? WagerTransactionMapper.toDomain(entity) : undefined;
+  }
+
+  async addIdempotent(transaction: WagerTransaction): Promise<boolean> {
+    const e = WagerTransactionMapper.toEntity(transaction);
+    const iso = (date: Date | null): string | null => date?.toISOString() ?? null;
+    try {
+      const inserted = await this.em.execute<{ id: string }[]>(
+        `insert into wager_transactions (
+           id, provider_id, external_transaction_id, idempotency_key, payload_hash, wallet_id, player_id, round_id, game_id, kind,
+           amount, currency, reference_external_transaction_id, reference_transaction_id, status, failure_code, observed_balance,
+           attempts, next_attempt_at, created_at, updated_at, processed_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         on conflict (idempotency_key) do nothing returning id`,
+        [
+          e.id, e.providerId, e.externalTransactionId, e.idempotencyKey, e.payloadHash, e.walletId, e.playerId, e.roundId, e.gameId, e.kind,
+          e.amount, e.currency, e.referenceExternalTransactionId, e.referenceTransactionId, e.status, e.failureCode, e.observedBalance,
+          e.attempts, iso(e.nextAttemptAt), iso(e.createdAt), iso(e.updatedAt), iso(e.processedAt),
+        ],
+      );
+      return inserted.length === 1;
+    } catch (error) {
+      if (error instanceof UniqueConstraintViolationException && error.message.includes('wt_external_id_uq')) throw new IdempotencyConflictError();
+      throw error;
+    }
+  }
+
+  async findByIdempotencyKey(idempotencyKey: string): Promise<WagerTransaction | undefined> {
+    const entity = await this.em.findOne(WagerTransactionEntity, { idempotencyKey });
+    return entity ? WagerTransactionMapper.toDomain(entity) : undefined;
+  }
+
+  async findByProviderExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined> {
+    const entity = await this.em.findOne(WagerTransactionEntity, { providerId, externalTransactionId });
     return entity ? WagerTransactionMapper.toDomain(entity) : undefined;
   }
 }

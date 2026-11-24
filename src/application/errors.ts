@@ -17,6 +17,19 @@ export class WalletAlreadyExistsError extends ApplicationError {
   }
 }
 
+/** Mesma `Idempotency-Key` com payload diferente, ou mesma identidade do provedor com outra chave. Nunca é replay. */
+export class IdempotencyConflictError extends ApplicationError {
+  constructor() {
+    super('Conflito de idempotência: a chave ou a identidade do provedor já pertence a outro payload');
+  }
+}
+
+export class WagerTransactionNotFoundError extends ApplicationError {
+  constructor() {
+    super('Transação não encontrada');
+  }
+}
+
 export class InvalidCursorError extends ApplicationError {
   constructor() {
     super('Cursor inválido');

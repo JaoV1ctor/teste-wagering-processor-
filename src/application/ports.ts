@@ -6,11 +6,25 @@ export interface WalletRepository {
   /** Lança `WalletAlreadyExistsError` se já existir wallet do mesmo player na mesma moeda. */
   add(wallet: Wallet): Promise<void>;
   findById(id: string): Promise<Wallet | undefined>;
+  /**
+   * Trava a linha (`SELECT ... FOR NO KEY UPDATE`) e devolve o estado já relido sob o lock; `undefined` se não existir.
+   * É o ÚNICO ponto que trava wallet e deve ser a primeira instrução que a toca na transação (SPEC D2).
+   */
+  lockWallet(id: string): Promise<Wallet | undefined>;
+  /** Grava saldo e `version` de uma wallet travada por `lockWallet` na MESMA transação. */
+  saveBalance(wallet: Wallet): Promise<void>;
 }
 
 export interface WagerTransactionRepository {
   add(transaction: WagerTransaction): Promise<void>;
   findById(id: string): Promise<WagerTransaction | undefined>;
+  /**
+   * `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING`: `true` se gravou, `false` se a chave já existia (o chamador relê).
+   * Lança `IdempotencyConflictError` se (provider, externalTransactionId) já existir com outra chave.
+   */
+  addIdempotent(transaction: WagerTransaction): Promise<boolean>;
+  findByIdempotencyKey(idempotencyKey: string): Promise<WagerTransaction | undefined>;
+  findByProviderExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined>;
 }
 
 /** Lançamento + `seq` global atribuído pelo banco (base do cursor de paginação). */
