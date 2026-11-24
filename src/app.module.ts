@@ -11,7 +11,9 @@ import { ProcessWagerTransactionUseCase } from './application/process-wager-tran
 import { PublishOutboxUseCase } from './application/publish-outbox.use-case';
 import { DEFAULT_REPROCESS_BATCH_SIZE, ReprocessPendingReferencesUseCase } from './application/reprocess-pending-references.use-case';
 import { optionalPositiveInt } from './infrastructure/env';
-import { loadWagerConsumerConfig } from './infrastructure/messaging/consumer-config';
+import { postgresCheck, sqsCheck } from './infrastructure/health/dependency-checks';
+import { ReadinessChecker } from './infrastructure/health/readiness';
+import { loadWagerConsumerConfig, type WagerConsumerConfig } from './infrastructure/messaging/consumer-config';
 import { loadOutboxConfig, type OutboxConfig } from './infrastructure/messaging/outbox-config';
 import { createSqsClient } from './infrastructure/messaging/sqs-client';
 import { SqsEventPublisher } from './infrastructure/messaging/sqs-event-publisher';
@@ -23,6 +25,7 @@ import { ObservedProcessing } from './infrastructure/observability/observed-proc
 import { createOrmConfig } from './infrastructure/persistence/orm.config';
 import { PollingWorker } from './infrastructure/workers/polling-worker';
 import { HttpExceptionFilter } from './interface/http/http-exception.filter';
+import { HealthController, READINESS } from './interface/http/health.controller';
 import { METRICS, MetricsController } from './interface/http/metrics.controller';
 import { WageringController } from './interface/http/wagering.controller';
 import { WalletsController } from './interface/http/wallets.controller';
@@ -35,14 +38,17 @@ const OUTBOX_LAG_GAUGE = Symbol('OUTBOX_LAG_GAUGE');
 const UNIT_OF_WORK = Symbol('UNIT_OF_WORK');
 const SQS_CLIENT = Symbol('SQS_CLIENT');
 const OUTBOX_CONFIG = Symbol('OUTBOX_CONFIG');
+const WAGER_CONSUMER_CONFIG = Symbol('WAGER_CONSUMER_CONFIG');
 /** Dois loops do mesmo tipo (`PollingWorker`): o token distingue qual é qual na injeção. */
 export const PENDING_REFERENCE_WORKER = Symbol('PENDING_REFERENCE_WORKER');
 export const OUTBOX_PUBLISHER_WORKER = Symbol('OUTBOX_PUBLISHER_WORKER');
 const POLL_INTERVAL_MS = 1000;
+/** Prazo de cada dependência no readiness: curto para o orquestrador não ficar pendurado, longo para uma resposta normal (dezenas de ms) não falhar. */
+const DEFAULT_HEALTH_CHECK_TIMEOUT_MS = 2000;
 
 /** Composição: os casos de uso são classes puras; o Nest só os instancia com as portas já resolvidas. */
 @Module({
-  controllers: [WalletsController, WageringController, MetricsController],
+  controllers: [WalletsController, WageringController, MetricsController, HealthController],
   providers: [
     { provide: ORM, useFactory: () => MikroORM.init(createOrmConfig()) },
     // Um registry por aplicação (não global): ver Metrics. O UnitOfWork o recebe como observador de retries, conflitos e espera de lock.
@@ -101,6 +107,17 @@ const POLL_INTERVAL_MS = 1000;
         }),
     },
     { provide: SQS_CLIENT, useFactory: createSqsClient },
+    // Lida aqui, na criação do módulo: variável ausente ou inválida derruba o boot. Compartilhada pelo consumidor e pelo readiness.
+    { provide: WAGER_CONSUMER_CONFIG, useFactory: loadWagerConsumerConfig },
+    {
+      provide: READINESS,
+      inject: [ORM, SQS_CLIENT, WAGER_CONSUMER_CONFIG, OUTBOX_CONFIG],
+      useFactory: (orm: MikroORM, client: SQSClient, consumer: WagerConsumerConfig, outbox: OutboxConfig) =>
+        new ReadinessChecker([postgresCheck(orm), sqsCheck(client, [consumer.queues.queueName, outbox.queueName])], {
+          timeoutMs: optionalPositiveInt('HEALTH_CHECK_TIMEOUT_MS', DEFAULT_HEALTH_CHECK_TIMEOUT_MS),
+          onFailure: (dependency, error) => logJson('warn', 'readiness_check_failed', { dependency, ...describeError(error) }),
+        }),
+    },
     // Lida aqui, na criação do módulo: variável ausente ou inválida derruba o boot.
     { provide: OUTBOX_CONFIG, useFactory: loadOutboxConfig },
     {
@@ -127,9 +144,8 @@ const POLL_INTERVAL_MS = 1000;
     {
       // Como o worker, só é criado aqui; quem o inicia é o main.ts. Mesmo ProcessWagerTransactionUseCase do HTTP.
       provide: QueueConsumer,
-      inject: [SQS_CLIENT, ProcessWagerTransactionUseCase, METRICS],
-      useFactory: (client: SQSClient, useCase: ProcessWagerTransactionUseCase, metrics: Metrics) => {
-        const config = loadWagerConsumerConfig();
+      inject: [SQS_CLIENT, ProcessWagerTransactionUseCase, METRICS, WAGER_CONSUMER_CONFIG],
+      useFactory: (client: SQSClient, useCase: ProcessWagerTransactionUseCase, metrics: Metrics, config: WagerConsumerConfig) => {
         const handler = new WagerMessageHandler(useCase, { consumerName: WAGER_CONSUMER_NAME, backoff: config.backoff, log: logJson });
         return new QueueConsumer(new SqsMessageQueue(client, config.queues), handler, { ...config.consumer, log: logJson, observer: metrics });
       },
