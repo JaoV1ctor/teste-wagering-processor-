@@ -5,12 +5,13 @@ import { Migrator } from '@mikro-orm/migrations';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { CreateWalletUseCase } from '../../src/application/create-wallet.use-case';
 import { type ProcessWagerCommand, ProcessWagerTransactionUseCase } from '../../src/application/process-wager-transaction.use-case';
+import { PublishOutboxUseCase } from '../../src/application/publish-outbox.use-case';
 import { ReprocessPendingReferencesUseCase } from '../../src/application/reprocess-pending-references.use-case';
 import { Money } from '../../src/domain/money';
 import { WagerTransactionKind } from '../../src/domain/wager-transaction';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { createOrmConfig } from '../../src/infrastructure/persistence/orm.config';
-import { createProbe, ensureSchema, parkPendingReferences } from '../support/db';
+import { createProbe, ensureSchema, parkOutbox, parkPendingReferences } from '../support/db';
 
 const probe = createProbe(2);
 const queries: string[] = [];
@@ -109,5 +110,29 @@ describe('worker de PENDING_REFERENCE', () => {
     expect(indexOf(statements, UPDATE_TX)).toBeLessThan(indexOf(statements, INSERT_LEDGER));
     expect(indexOf(statements, INSERT_LEDGER)).toBeLessThan(indexOf(statements, INSERT_OUTBOX));
     expect(statements.filter((q) => INSERT_OUTBOX.test(q))).toHaveLength(2);
+  });
+});
+
+describe('publisher', () => {
+  test('o claim é uma transação curta SEM wallet nem ledger, com FOR UPDATE SKIP LOCKED; marcar publicado é outra transação, depois do envio', async () => {
+    await parkOutbox(probe);
+    await submit(WagerTransactionKind.Loss, '1.00');
+    const published: string[] = [];
+    const publisher = new PublishOutboxUseCase(
+      uow,
+      { publish: async (message) => void published.push(message.id) },
+      { onError: (error) => { throw error; } },
+    );
+
+    queries.length = 0;
+    expect(await publisher.runOnce()).toMatchObject({ claimed: 1, published: 1 });
+    const all = queries.map(plain);
+    const claim = all.findIndex((q) => /for update skip locked/.test(q));
+    expect(claim).toBeGreaterThan(-1);
+    expect(all.some((q) => /wallets|wallet_ledger_entries|wager_transactions/.test(q))).toBe(false);
+    const firstCommit = all.findIndex((q) => COMMIT.test(q));
+    expect(firstCommit).toBeGreaterThan(claim); // o claim já foi confirmado...
+    expect(all.slice(firstCommit + 1).findIndex((q) => /update "?outbox_messages"?/.test(q))).toBeGreaterThan(-1); // ...antes de marcar publicado
+    expect(published).toHaveLength(1);
   });
 });
