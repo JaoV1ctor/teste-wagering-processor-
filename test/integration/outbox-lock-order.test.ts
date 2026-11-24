@@ -53,6 +53,7 @@ async function statementsOf(run: () => Promise<unknown>): Promise<string[]> {
 
 async function submit(kind: WagerTransactionKind, amount: string): Promise<string[]> {
   const wallet = await new CreateWalletUseCase(uow).execute({ playerId: uuid(), initialBalance: brl('100.00') });
+  await parkOutbox(probe); // os eventos da abertura não fazem parte do que cada teste observa
   const externalTransactionId = `ext-${uuid()}`;
   const cmd: ProcessWagerCommand = {
     idempotencyKey: `provider-a:${externalTransactionId}`, providerId: 'provider-a', externalTransactionId, playerId: wallet.playerId,

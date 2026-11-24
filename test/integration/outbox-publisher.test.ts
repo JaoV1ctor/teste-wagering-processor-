@@ -61,10 +61,14 @@ interface Seeded {
   transactionIds: string[];
 }
 
-/** `bets` apostas de 10,00 numa wallet nova (2 eventos cada: Processed e BalanceChanged). Depois fixa o relógio do publisher em "agora". */
+/**
+ * `bets` apostas de 10,00 numa wallet nova (2 eventos cada: Processed e BalanceChanged). Os eventos da abertura são estacionados: estes testes
+ * contam só os eventos das apostas. Depois fixa o relógio do publisher em "agora".
+ */
 async function seed(bets = 1): Promise<Seeded> {
   const useCase = new ProcessWagerTransactionUseCase(uow);
   const wallet = await new CreateWalletUseCase(uow).execute({ playerId: uuid(), initialBalance: brl('1000.00') });
+  await parkOutbox(probe);
   const transactionIds: string[] = [];
   for (let i = 0; i < bets; i += 1) {
     const externalTransactionId = `ext-${uuid()}`;
@@ -280,6 +284,7 @@ describe('um evento NUNCA é publicado antes do COMMIT', () => {
 
   test('com a transação aberta (eventos já INSERIDOS, sem commit) o publisher não vê nada e a fila fica vazia; após o commit, publica', async () => {
     const wallet = await new CreateWalletUseCase(uow).execute({ playerId: uuid(), initialBalance: brl('1000.00') });
+    await parkOutbox(probe); // os eventos da abertura não fazem parte do que este teste observa
     const { holder, reached, release } = holdingBeforeCommit();
     const inFlight = new ProcessWagerTransactionUseCase(holder).execute(command(wallet.id, wallet.playerId, `ext-${uuid()}`));
     await reached;
@@ -299,6 +304,7 @@ describe('um evento NUNCA é publicado antes do COMMIT', () => {
 
   test('transação que falha (ROLLBACK): nenhum evento existe e nenhuma mensagem chega à fila, nunca', async () => {
     const wallet = await new CreateWalletUseCase(uow).execute({ playerId: uuid(), initialBalance: brl('1000.00') });
+    await parkOutbox(probe); // os eventos da abertura não fazem parte do que este teste observa
     const { holder, reached, release } = holdingBeforeCommit();
     const inFlight = new ProcessWagerTransactionUseCase(holder).execute(command(wallet.id, wallet.playerId, `ext-${uuid()}`));
     // Não usar `expect(inFlight).rejects` aqui: o Bun gira o event loop até a promise resolver, e só este teste a libera.

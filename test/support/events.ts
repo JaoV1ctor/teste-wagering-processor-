@@ -36,8 +36,16 @@ export async function outboxOfTransaction(probe: pg.Pool, transactionId: string)
   return rows;
 }
 
-export async function outboxOfWallet(probe: pg.Pool, walletId: string): Promise<OutboxRow[]> {
-  const { rows } = await probe.query<OutboxRow>(`select ${COLUMNS} from outbox_messages where payload->'data'->>'walletId' = $1 order by occurred_at, event_type, id`, [walletId]);
+/**
+ * Eventos de uma wallet, em ordem de ocorrência. Por padrão SEM os da abertura (OPENING): quase todo teste cria a wallet com saldo e
+ * quer ver só o que a aposta gerou. `includeOpening` os inclui (testes da abertura e da invariante contra o ledger).
+ */
+export async function outboxOfWallet(probe: pg.Pool, walletId: string, { includeOpening = false } = {}): Promise<OutboxRow[]> {
+  const notOpening = "and payload->'data'->>'transactionId' not in (select id::text from wager_transactions where wallet_id = $1::uuid and kind = 'OPENING')";
+  const { rows } = await probe.query<OutboxRow>(
+    `select ${COLUMNS} from outbox_messages where payload->'data'->>'walletId' = $1::text ${includeOpening ? '' : notOpening} order by occurred_at, event_type, id`,
+    [walletId],
+  );
   return rows;
 }
 
@@ -45,7 +53,7 @@ export const typesOf = (rows: OutboxRow[]): string[] => rows.map((row) => row.ev
 
 /**
  * Invariante final (SPEC §10) estendida aos eventos: saldo == ledger; todo `WalletBalanceChanged` tem o lançamento correspondente
- * (mesma transação, direção, valor, antes e depois) e todo lançamento que não é de abertura tem o seu evento.
+ * (mesma transação, direção, valor, antes e depois) e todo lançamento, inclusive o de abertura (OPENING), tem o seu evento.
  */
 export async function expectEventsConsistentWithLedger(probe: pg.Pool, walletId: string): Promise<void> {
   const balance = await ledgerBalance(probe, walletId);
@@ -53,9 +61,9 @@ export async function expectEventsConsistentWithLedger(probe: pg.Pool, walletId:
 
   const { rows: entries } = await probe.query<{ transaction_id: string; direction: string; amount: string; balance_before: string; balance_after: string }>(
     `select l.transaction_id, l.direction, l.amount::text, l.balance_before::text, l.balance_after::text
-       from wallet_ledger_entries l join wager_transactions t on t.id = l.transaction_id
-      where l.wallet_id = $1 and t.kind <> 'OPENING' order by l.seq`, [walletId]);
-  const changes = (await outboxOfWallet(probe, walletId)).filter((row) => row.event_type === 'WalletBalanceChanged');
+       from wallet_ledger_entries l
+      where l.wallet_id = $1 order by l.seq`, [walletId]);
+  const changes = (await outboxOfWallet(probe, walletId, { includeOpening: true })).filter((row) => row.event_type === 'WalletBalanceChanged');
 
   expect(changes).toHaveLength(entries.length);
   for (const change of changes) {

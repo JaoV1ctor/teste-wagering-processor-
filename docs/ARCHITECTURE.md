@@ -625,8 +625,8 @@ Interpretações desta fase:
 - **`correlationId`**: header `x-correlation-id` no HTTP (opcional, até 128 caracteres), `messageId` no SQS; sem origem (HTTP sem o header, reprocesso do worker) é o **id da transação**. Consequência: os eventos de uma transação que passou pelo worker
   podem ter `correlationId`s diferentes (o da submissão e o do reprocesso); o `aggregateId` é o que os liga. Guardar o `correlationId` na transação exigiria uma coluna nova (migration); não foi feito.
 - **`causationId`** só existe onde há uma causa a apontar: o `WalletBalanceChanged` aponta o `eventId` do `WagerTransactionProcessed` do mesmo processamento.
-- **`OPENING` (criação de wallet) não gera evento.** O saldo inicial entra por `POST /wallets`, que não é uma transação de aposta, e o README lista os eventos como consequência de `WagerTransaction`. Um consumidor que precise do saldo inicial lê a wallet.
-  A invariante verificada é "todo `BalanceChanged` tem o lançamento correspondente e todo lançamento que não é de abertura tem o seu `BalanceChanged`".
+- **`OPENING` (criação de wallet) gera os mesmos eventos de qualquer transação aplicada** (`WagerTransactionProcessed` e `WalletBalanceChanged`). A decisão original desta fase (não gerar) foi revertida na Fase 6: ver "Ajuste da Fase 5" abaixo.
+  A invariante verificada é "todo `BalanceChanged` tem o lançamento correspondente e todo lançamento, inclusive o de abertura, tem o seu `BalanceChanged`".
 - `OutboxMessage` não expõe `isDue`: o vencimento é decidido pelo claim em SQL; um método de domínio sem uso seria código morto.
 
 ### Decisões e alternativas
@@ -713,5 +713,25 @@ Invariante final (`wallet.balance == saldo reconstruído pelo ledger`, mais "tod
 - **Relógio da aplicação** em lease, backoff e `published_at`. Um desvio entre instâncias desloca vencimentos em segundos; não afeta a correção (a exclusão mútua é do claim, não do relógio), só pode causar uma duplicata a mais.
 - **Vazão por instância** ≈ 1/latência do `SendMessage` (publicação sequencial); escala com mais instâncias. `SendMessageBatch` foi descartado (resposta parcial por item complica o tratamento de falha sem necessidade medida).
 - **Contadores do MiniStack.** Os testes leem a fila com `ReceiveMessage`/`DeleteMessage` (não com `ApproximateNumberOfMessages`). A duplicata do SQS padrão por conta própria não foi observada no MiniStack; as duplicatas testadas são provocadas (crash entre envio e marcação, lease vencido).
-- **Eventos de `OPENING` e de `FAILED`** não existem: o primeiro por decisão acima; o segundo porque `FAILED` não é gravado no caminho SQS (Fase 4) e o README não lista evento para ele.
+- **Evento de `FAILED`** não existe: `FAILED` não é gravado no caminho SQS (Fase 4) e o README não lista evento para ele.
 - **Isolamento dos testes.** O banco de testes acumula eventos entre execuções; os testes que rodam um publisher chamam `parkOutbox` (marca como publicados os pendentes de outros testes), do mesmo modo que `parkPendingReferences`. Os testes assumem execução sequencial dos arquivos (padrão do `bun test`).
+
+
+---
+
+## Fase 6 — Reconciliação, health, métricas e logs
+
+### Ajuste da Fase 5: eventos da abertura da wallet (`OPENING`)
+
+**Problema.** Na Fase 5 a criação de wallet com `initialBalance > 0` alterava o saldo (grava `OPENING` + `CREDIT`) e não gerava evento. Um consumidor que reconstrói o saldo por `WalletBalanceChanged`
+(`balanceBefore`/`balanceAfter`/`walletVersion`) via a wallet nascer já com saldo e uma lacuna entre a `version` 1 e o saldo do primeiro evento. Era uma exceção à regra "todo fato que muda saldo tem evento" (SPEC §3.9).
+
+**Decisão.** `CreateWalletUseCase` grava `WagerTransactionProcessed` (kind `OPENING`, `providerId = 'internal'`) e `WalletBalanceChanged` (`CREDIT`, `balanceBefore = 0.00`, `walletVersion = 1`) no outbox, **na mesma transação SQL da criação**,
+reaproveitando `integrationEventsFor` (a mesma função pura do HTTP, SQS e worker). Ordem de escrita: wallet → transação → ledger → outbox.
+
+- **Atomicidade.** Wallet duplicada falha no primeiro `INSERT` (`wallets_player_currency_uq`, 409) e nada mais é gravado, nem evento. Falha ao gravar o ledger ou o próprio evento desfaz tudo (testes de atomicidade).
+- **`initialBalance = 0.00`** continua sem `OPENING`, sem lançamento e sem evento: o saldo não muda.
+- **`correlationId`** é o id da transação `OPENING` (a criação não recebe `x-correlation-id`); `causationId` do `WalletBalanceChanged` aponta o `Processed`.
+- **Alternativa descartada: um evento próprio `WalletOpened`.** Criaria um tipo novo fora do contrato do README (§11) e obrigaria o consumidor a tratar dois caminhos para o mesmo conceito (saldo mudou). Reaproveitar os eventos existentes mantém o contrato.
+- **Compatibilidade.** O consumidor que já deduplica por `eventId` e ordena por `walletVersion` não muda; ele passa a ver a `version` 1.
+- A invariante dos testes (`expectEventsConsistentWithLedger`) deixou de excluir a abertura: todo lançamento, inclusive o `OPENING`, tem o seu `WalletBalanceChanged`.

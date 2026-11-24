@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { Money } from '../domain/money';
-import { WagerTransaction, WagerTransactionKind } from '../domain/wager-transaction';
+import { OutboxMessage } from '../domain/outbox-message';
+import { WagerTransaction, WagerTransactionKind, WagerTransactionStatus } from '../domain/wager-transaction';
 import { Wallet } from '../domain/wallet';
+import { integrationEventsFor } from './integration-events';
 import { computePayloadHash } from './payload-hash';
 import type { UnitOfWork } from './ports';
 
@@ -20,8 +22,9 @@ export class CreateWalletUseCase {
   ) {}
 
   /**
-   * Saldo inicial > 0 gera a transação interna OPENING e o lançamento CREDIT na MESMA transação SQL.
-   * Ordem de escrita: wallet -> transação -> ledger.
+   * Saldo inicial > 0 gera a transação interna OPENING, o lançamento CREDIT e os eventos (`WagerTransactionProcessed` e
+   * `WalletBalanceChanged`, porque o saldo muda) na MESMA transação SQL. Ordem de escrita: wallet -> transação -> ledger -> outbox.
+   * Wallet duplicada falha no primeiro INSERT: nada é gravado, nem evento.
    */
   async execute(input: CreateWalletInput): Promise<Wallet> {
     const now = this.clock();
@@ -31,12 +34,17 @@ export class CreateWalletUseCase {
       openingTransactionId, openingEntryId: this.newId(), now,
     });
 
-    await this.uow.run(async ({ wallets, transactions, ledger }) => {
+    await this.uow.run(async ({ wallets, transactions, ledger, outbox }) => {
       await wallets.add(wallet);
-      if (openingEntry) {
-        await transactions.add(openingTransaction(wallet, openingTransactionId, now));
-        await ledger.add(openingEntry);
-      }
+      if (!openingEntry) return;
+      const opening = openingTransaction(wallet, openingTransactionId, now);
+      await transactions.add(opening);
+      await ledger.add(openingEntry);
+      // Sem origem (nem header nem mensagem), o correlationId é o id da transação, como no reprocesso do worker.
+      const events = integrationEventsFor({
+        transaction: opening, wallet, entry: openingEntry, previousStatus: WagerTransactionStatus.Pending, correlationId: undefined, at: now, newId: this.newId,
+      });
+      for (const event of events) await outbox.add(OutboxMessage.enqueue(event));
     });
     return wallet;
   }

@@ -70,12 +70,18 @@ function spawnPublisher(env: Record<string, string>): Child {
   };
 }
 
-/** `perWallet` apostas em cada uma de `wallets` wallets, em paralelo entre wallets. Devolve os ids dos eventos gerados. */
+/**
+ * `perWallet` apostas em cada uma de `wallets` wallets, em paralelo entre wallets. Devolve os ids dos eventos das apostas. Os eventos da
+ * abertura são estacionados antes das apostas (`parkOutbox` é global, por isso as wallets são criadas todas antes): estes testes contam só as apostas.
+ */
 async function seedEvents(wallets: number, perWallet: number): Promise<{ walletIds: string[]; eventIds: Set<string> }> {
   const useCase = new ProcessWagerTransactionUseCase(uow);
+  const created = await Promise.all(
+    Array.from({ length: wallets }, () => new CreateWalletUseCase(uow).execute({ playerId: uuid(), initialBalance: brl('1000.00') })),
+  );
+  await parkOutbox(probe);
   const walletIds = await Promise.all(
-    Array.from({ length: wallets }, async () => {
-      const wallet = await new CreateWalletUseCase(uow).execute({ playerId: uuid(), initialBalance: brl('1000.00') });
+    created.map(async (wallet) => {
       for (let i = 0; i < perWallet; i += 1) {
         const externalTransactionId = `ext-${uuid()}`;
         await useCase.execute({
@@ -221,10 +227,12 @@ describe('#8 reinício do serviço', () => {
     const first = await call(a.url, 'POST', '/wagering/transactions', bet, headers);
     expect(first.status).toBe(201);
 
-    // Commit feito, nada publicado.
+    // Commit feito, nada publicado: os 2 eventos da abertura da wallet e os 2 da aposta.
     const before = await outboxOfTransaction(probe, first.body.transactionId);
     expect(typesOf(before)).toEqual(['WagerTransactionProcessed', 'WalletBalanceChanged']);
-    expect(before.every((row) => row.published_at === null)).toBe(true);
+    const allBefore = await outboxOfWallet(probe, walletId, { includeOpening: true });
+    expect(allBefore).toHaveLength(4);
+    expect(allBefore.every((row) => row.published_at === null)).toBe(true);
     await sink.collect();
     expect(sink.received).toEqual([]);
 
@@ -235,10 +243,12 @@ describe('#8 reinício do serviço', () => {
     // Outra instância sobe e assume.
     const b = await startService(200);
     try {
-      await sink.waitUntil('os 2 eventos publicados pela nova instância', (s) => s.uniqueIds.size >= 2);
-      expect(sink.uniqueIds).toEqual(new Set(before.map((row) => row.id)));
-      expect(sink.received.every((r) => r.envelope.correlationId === 'corr-restart')).toBe(true);
-      await waitFor('published_at gravado', async () => (await outboxOfTransaction(probe, first.body.transactionId)).every((row) => row.published_at !== null));
+      await sink.waitUntil('os 4 eventos publicados pela nova instância', (s) => s.uniqueIds.size >= 4);
+      expect(sink.uniqueIds).toEqual(new Set(allBefore.map((row) => row.id)));
+      const ofBet = sink.received.filter((r) => r.envelope.data['transactionId'] === first.body.transactionId);
+      expect(ofBet).toHaveLength(2);
+      expect(ofBet.every((r) => r.envelope.correlationId === 'corr-restart')).toBe(true);
+      await waitFor('published_at gravado', async () => (await outboxOfWallet(probe, walletId, { includeOpening: true })).every((row) => row.published_at !== null));
 
       // Consistência final: saldo == ledger == eventos; e a idempotência sobreviveu ao reinício (estado só no banco).
       await expectEventsConsistentWithLedger(probe, walletId);
@@ -246,7 +256,7 @@ describe('#8 reinício do serviço', () => {
       expect(replay).toMatchObject({ status: 201, body: { transactionId: first.body.transactionId, idempotentReplay: true } });
       expect(await outboxOfTransaction(probe, first.body.transactionId)).toHaveLength(2); // o replay não gerou evento
       await sink.collect();
-      expect(sink.received).toHaveLength(2); // e a fila não recebeu mais nada
+      expect(sink.received).toHaveLength(4); // e a fila não recebeu mais nada
     } finally {
       b.proc.kill('SIGKILL');
       await b.exited;
