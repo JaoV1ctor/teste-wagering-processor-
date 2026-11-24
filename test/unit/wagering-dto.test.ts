@@ -4,7 +4,7 @@ import { randomUUID as uuid } from 'node:crypto';
 import { FailureCode } from '../../src/domain/failure-code';
 import { Money } from '../../src/domain/money';
 import { WagerTransaction, WagerTransactionKind, WagerTransactionStatus } from '../../src/domain/wager-transaction';
-import { httpStatusFor, IdempotencyKeyHeader, SubmitTransactionBody, toSubmitResponse, toTransactionResponse } from '../../src/interface/http/wagering.dto';
+import { CorrelationIdHeader, httpStatusFor, IdempotencyKeyHeader, SubmitTransactionBody, toSubmitResponse, toTransactionResponse } from '../../src/interface/http/wagering.dto';
 
 const valid = () => ({
   providerId: 'provider-a', externalTransactionId: 'transaction-123', playerId: uuid(), walletId: uuid(), roundId: 'round-987',
@@ -71,6 +71,17 @@ describe('IdempotencyKeyHeader', () => {
 
   test.each([undefined, '', '   ', 'x'.repeat(256)])('rejeita %p', (value) => {
     expect(IdempotencyKeyHeader.safeParse(value).success).toBe(false);
+  });
+});
+
+describe('CorrelationIdHeader', () => {
+  test('é opcional: ausente é aceito e o valor presente é preservado', () => {
+    expect(CorrelationIdHeader.parse(undefined)).toBeUndefined();
+    expect(CorrelationIdHeader.parse('corr-123')).toBe('corr-123');
+  });
+
+  test.each(['', '   ', 'x'.repeat(129)])('rejeita %p', (value) => {
+    expect(CorrelationIdHeader.safeParse(value).success).toBe(false);
   });
 });
 

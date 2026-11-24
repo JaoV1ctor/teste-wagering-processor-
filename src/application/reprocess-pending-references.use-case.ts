@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { OutboxMessage } from '../domain/outbox-message';
 import { WagerTransactionStatus } from '../domain/wager-transaction';
 import { WalletNotFoundError } from './errors';
+import { integrationEventsFor } from './integration-events';
 import type { ClaimedPendingReference, UnitOfWork } from './ports';
 import { settleLocked } from './settle-locked-transaction';
 
@@ -32,7 +34,7 @@ export interface ReprocessOptions {
 /**
  * Worker de PENDING_REFERENCE (SPEC §8.3, D7). `runOnce()` é uma passada: reivindica as vencidas por lease (outra transação, curta)
  * e reprocessa cada uma em uma transação normal, na MESMA ordem de locks do caso de uso de submissão: wallet primeiro,
- * depois relê a transação (outro processo pode tê-la resolvido), decide com `settleLocked` e grava transação -> wallet -> ledger.
+ * depois relê a transação (outro processo pode tê-la resolvido), decide com `settleLocked` e grava transação -> wallet -> ledger -> outbox.
  * Correto com N instâncias: o claim entrega lotes disjuntos e o lock da wallet serializa o resto.
  */
 export class ReprocessPendingReferencesUseCase {
@@ -74,19 +76,25 @@ export class ReprocessPendingReferencesUseCase {
   }
 
   async reprocessOne({ id, walletId }: ClaimedPendingReference): Promise<ReprocessOutcome> {
-    return this.uow.run(async ({ wallets, transactions, ledger }) => {
+    return this.uow.run(async ({ wallets, transactions, ledger, outbox }) => {
       const wallet = await wallets.lockWallet(walletId); // primeira instrução que toca a wallet (SPEC D2)
       if (!wallet) throw new WalletNotFoundError(walletId);
 
       const transaction = await transactions.findById(id);
       if (transaction?.status !== WagerTransactionStatus.PendingReference) return 'skipped';
 
-      const entry = await settleLocked({ transactions }, wallet, transaction, { entryId: this.newId(), at: this.clock(), random: this.random });
+      const now = this.clock();
+      const entry = await settleLocked({ transactions }, wallet, transaction, { entryId: this.newId(), at: now, random: this.random });
       await transactions.update(transaction);
       if (entry) {
         await wallets.saveBalance(wallet);
         await ledger.add(entry);
       }
+      // Sem origem (nem header nem mensagem): o correlationId é o id da transação. Reagendar quem já estava pendente não gera evento.
+      const events = integrationEventsFor({
+        transaction, wallet, entry, previousStatus: WagerTransactionStatus.PendingReference, correlationId: undefined, at: now, newId: this.newId,
+      });
+      for (const event of events) await outbox.add(OutboxMessage.enqueue(event));
       return outcomeOf(transaction.status);
     });
   }

@@ -64,6 +64,7 @@ describe('WagerMessageHandler: classificação de erros (SPEC §8.1)', () => {
     await handler.handle(body, 1);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.origin).toEqual({ consumerName: 'wager-consumer', messageId: 'msg-1' });
+    expect(calls[0]?.command.correlationId).toBe('msg-1'); // o messageId é o correlationId dos eventos
     expect(calls[0]?.command.idempotencyKey).toBe('provider-a:ext-1');
     expect(calls[0]?.command.money.toString()).toBe('25.00');
   });

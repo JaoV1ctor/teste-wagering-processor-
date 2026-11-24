@@ -54,7 +54,7 @@ export class WagerMessageHandler {
     try {
       const parsed = parseWagerMessage(body);
       messageId = parsed.messageId;
-      const outcome = await this.processor.execute(parsed.command, { consumerName: this.options.consumerName, messageId });
+      const outcome = await this.processor.execute({ ...parsed.command, correlationId: messageId }, { consumerName: this.options.consumerName, messageId });
       this.options.log('info', 'wager_message_processed', { correlationId: messageId, outcome: describeOutcome(outcome) });
       return { action: 'ack' };
     } catch (error) {

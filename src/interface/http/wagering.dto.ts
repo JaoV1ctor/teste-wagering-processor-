@@ -37,6 +37,8 @@ export function checkReferenceRules(ctx: z.core.ParsePayload<{ kind: string; ext
 export const SubmitTransactionBody = z.strictObject(wagerFields).check(checkReferenceRules);
 
 export const IdempotencyKeyHeader = z.string().trim().min(1).max(255);
+/** Opcional: quem chama pode rastrear a requisição. Limite igual ao do `messageId` do SQS, que cumpre o mesmo papel. */
+export const CorrelationIdHeader = z.string().trim().min(1).max(128).optional();
 export const TransactionIdParam = z.uuid();
 export const ProviderTransactionParams = z.strictObject({ providerId: identifier, externalTransactionId: identifier });
 

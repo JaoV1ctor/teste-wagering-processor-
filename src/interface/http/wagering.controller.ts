@@ -3,7 +3,7 @@ import type { z } from 'zod';
 import { GetWagerTransactionUseCase } from '../../application/get-wager-transaction.use-case';
 import { ProcessWagerTransactionUseCase } from '../../application/process-wager-transaction.use-case';
 import {
-  httpStatusFor, IdempotencyKeyHeader, ProviderTransactionParams, SubmitTransactionBody, type SubmitResponse, toSubmitResponse,
+  CorrelationIdHeader, httpStatusFor, IdempotencyKeyHeader, ProviderTransactionParams, SubmitTransactionBody, type SubmitResponse, toSubmitResponse,
   toTransactionResponse, TransactionIdParam, type TransactionResponse,
 } from './wagering.dto';
 import { ZodValidationPipe } from './wallets.dto';
@@ -23,13 +23,15 @@ export class WageringController {
   @Post('wagering/transactions')
   async submit(
     @Headers('idempotency-key') rawIdempotencyKey: string | undefined,
+    @Headers('x-correlation-id') rawCorrelationId: string | undefined,
     @Body(new ZodValidationPipe(SubmitTransactionBody)) body: z.output<typeof SubmitTransactionBody>,
     @Res({ passthrough: true }) response: StatusSetter,
   ): Promise<SubmitResponse> {
     // O Nest não aplica pipes a @Headers (só a body, query e param): o cabeçalho é validado aqui.
     const idempotencyKey = IdempotencyKeyHeader.parse(rawIdempotencyKey);
+    const correlationId = CorrelationIdHeader.parse(rawCorrelationId);
     const result = await this.processWager.execute({
-      idempotencyKey, providerId: body.providerId, externalTransactionId: body.externalTransactionId, playerId: body.playerId,
+      idempotencyKey, ...(correlationId === undefined ? {} : { correlationId }), providerId: body.providerId, externalTransactionId: body.externalTransactionId, playerId: body.playerId,
       walletId: body.walletId, roundId: body.roundId, gameId: body.gameId, kind: body.kind, money: body.money,
       ...(body.referenceExternalTransactionId === undefined ? {} : { referenceExternalTransactionId: body.referenceExternalTransactionId }),
     });

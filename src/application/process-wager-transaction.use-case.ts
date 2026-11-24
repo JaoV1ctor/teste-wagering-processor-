@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { InboxMessage } from '../domain/inbox-message';
 import type { Money } from '../domain/money';
-import { WagerTransaction, type WagerTransactionKind } from '../domain/wager-transaction';
+import { OutboxMessage } from '../domain/outbox-message';
+import { WagerTransaction, type WagerTransactionKind, WagerTransactionStatus } from '../domain/wager-transaction';
 import { IdempotencyConflictError, InboxPayloadConflictError, WalletNotFoundError } from './errors';
+import { integrationEventsFor } from './integration-events';
 import { computePayloadHash } from './payload-hash';
 import type { Repositories, UnitOfWork } from './ports';
 import { settleLocked } from './settle-locked-transaction';
@@ -20,6 +22,8 @@ export interface ProcessWagerCommand {
   money: Money;
   /** id no provedor da transação referenciada: obrigatório em REFUND/ROLLBACK, opcional em WIN/LOSS, proibido em BET. */
   referenceExternalTransactionId?: string;
+  /** Origem do processamento nos eventos: header `x-correlation-id` (HTTP) ou `messageId` (SQS). Não entra no `payloadHash`. Ausente: o id da transação. */
+  correlationId?: string;
 }
 
 export interface ProcessWagerResult {
@@ -40,8 +44,9 @@ export interface DuplicateMessageResult {
 
 /**
  * SPEC §6. Idempotência decidida pelo banco (UNIQUE), nunca por estado em memória.
- * Ordem de locks e escrita: wallet -> transação -> ledger. A transação nasce PENDING no domínio e é gravada UMA vez, no estado final
+ * Ordem de locks e escrita: wallet -> transação -> ledger -> outbox. A transação nasce PENDING no domínio e é gravada UMA vez, no estado final
  * (PROCESSED, REJECTED ou PENDING_REFERENCE, quando a referência ainda não chegou; o worker a resolve depois).
+ * Os eventos de integração entram no outbox como ÚLTIMO passo da MESMA transação SQL: sem commit, não há evento.
  */
 export class ProcessWagerTransactionUseCase {
   constructor(
@@ -88,7 +93,7 @@ export class ProcessWagerTransactionUseCase {
   }
 
   private async processLocked(
-    { wallets, transactions, ledger }: Repositories,
+    { wallets, transactions, ledger, outbox }: Repositories,
     command: ProcessWagerCommand,
     payloadHash: string,
   ): Promise<ProcessWagerResult> {
@@ -115,6 +120,10 @@ export class ProcessWagerTransactionUseCase {
       await wallets.saveBalance(wallet);
       await ledger.add(entry);
     }
+    const events = integrationEventsFor({
+      transaction, wallet, entry, previousStatus: WagerTransactionStatus.Pending, correlationId: command.correlationId, at: now, newId: this.newId,
+    });
+    for (const event of events) await outbox.add(OutboxMessage.enqueue(event));
     return { transaction, idempotentReplay: false };
   }
 }
