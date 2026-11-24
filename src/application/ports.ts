@@ -60,8 +60,25 @@ export interface ListLedgerOptions {
   limit: number;
 }
 
+/** Saldo guardado x soma do ledger de uma wallet. Dinheiro como string decimal exata (a diferença pode ser negativa, então não é `Money`). */
+export interface LedgerSummary {
+  currency: string;
+  storedBalance: string;
+  /** SUM(CREDIT) - SUM(DEBIT) dos lançamentos. */
+  calculatedBalance: string;
+  /** `storedBalance - calculatedBalance`, com sinal. */
+  difference: string;
+  consistent: boolean;
+  checkedEntries: number;
+}
+
 export interface LedgerRepository {
   add(entry: LedgerEntry): Promise<void>;
+  /**
+   * Reconciliação: lê `wallets.balance` e a soma do ledger numa ÚNICA instrução (um snapshot), então não precisa de lock e nunca enxerga
+   * saldo de um commit e ledger de outro. `undefined` se a wallet não existir. Só lê; nunca corrige.
+   */
+  summarize(walletId: string): Promise<LedgerSummary | undefined>;
   /** Em ordem crescente de `seq`. */
   listByWallet(walletId: string, options: ListLedgerOptions): Promise<LedgerRecord[]>;
 }

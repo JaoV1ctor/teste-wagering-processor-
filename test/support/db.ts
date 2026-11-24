@@ -105,3 +105,71 @@ export async function parkOutbox(probe: pg.Pool): Promise<void> {
 export async function parkPendingReferences(probe: pg.Pool): Promise<void> {
   await probe.query("update wager_transactions set next_attempt_at = 'infinity' where status = 'PENDING_REFERENCE'");
 }
+
+/**
+ * Provoca divergência "saldo MAIOR que o ledger": soma `delta` ao saldo e à version, sem lançamento. O trigger deferido
+ * `wallets_match_ledger_trg` é desligado SÓ dentro desta transação (DDL é transacional no Postgres) e religado antes do COMMIT:
+ * um evento que não foi enfileirado enquanto o trigger estava desligado não dispara depois. Nada fora desta transação enxerga o trigger desligado.
+ */
+export async function inflateBalance(probe: pg.Pool, walletId: string, delta: string): Promise<void> {
+  const client = await probe.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('select 1 from wallets where id = $1 for no key update', [walletId]);
+    await client.query('ALTER TABLE wallets DISABLE TRIGGER wallets_match_ledger_trg');
+    await client.query('update wallets set balance = balance + $2::numeric, version = version + 1 where id = $1', [walletId, delta]);
+    await client.query('ALTER TABLE wallets ENABLE TRIGGER wallets_match_ledger_trg');
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Provoca divergência "ledger MAIOR que o saldo": grava um lançamento CREDIT (com a transação que o justifica) sem atualizar a wallet.
+ * Desliga `ledger_match_wallet_trg` só dentro desta transação; a cadeia do ledger (`balance_before` = último `balance_after`) segue válida.
+ */
+export async function creditLedgerOnly(probe: pg.Pool, walletId: string, amount: string): Promise<void> {
+  const client = await probe.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query<{ player_id: string; currency: string; last_after: string }>(
+      `select w.player_id, w.currency,
+              coalesce((select balance_after from wallet_ledger_entries where wallet_id = w.id order by seq desc limit 1), 0)::text as last_after
+         from wallets w where w.id = $1 for no key update`, [walletId]);
+    const wallet = rows[0];
+    if (!wallet) throw new Error(`wallet ${walletId} não existe`);
+    await client.query('ALTER TABLE wallet_ledger_entries DISABLE TRIGGER ledger_match_wallet_trg');
+    const txId = uuid();
+    await client.query(
+      `insert into wager_transactions (id, provider_id, external_transaction_id, idempotency_key, payload_hash, wallet_id,
+         player_id, round_id, game_id, kind, amount, currency, status, observed_balance, processed_at)
+       values ($1,'diverge',$2,$2,$3,$4,$5,'r','g','WIN',$6::numeric,$7,'PROCESSED',$8::numeric + $6::numeric,now())`,
+      [txId, `diverge:${txId}`, 'b'.repeat(64), walletId, wallet.player_id, amount, wallet.currency, wallet.last_after],
+    );
+    await client.query(
+      `insert into wallet_ledger_entries (id, wallet_id, transaction_id, direction, amount, currency, balance_before, balance_after)
+       values ($1,$2,$3,'CREDIT',$4::numeric,$5,$6::numeric,$6::numeric + $4::numeric)`,
+      [uuid(), walletId, txId, amount, wallet.currency, wallet.last_after],
+    );
+    await client.query('ALTER TABLE wallet_ledger_entries ENABLE TRIGGER ledger_match_wallet_trg');
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Higiene depois de provocar divergência: alinha o saldo ao ledger com um UPDATE legítimo (triggers ligados), para não deixar lixo no banco compartilhado. */
+export async function healFromLedger(probe: pg.Pool, walletId: string): Promise<void> {
+  await probe.query(
+    `update wallets w
+        set balance = coalesce((select balance_after from wallet_ledger_entries where wallet_id = w.id order by seq desc limit 1), 0),
+            version = version + 1
+      where w.id = $1`, [walletId]);
+}

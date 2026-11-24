@@ -8,6 +8,7 @@ import { GetWagerTransactionUseCase } from './application/get-wager-transaction.
 import { ListLedgerUseCase } from './application/list-ledger.use-case';
 import type { UnitOfWork } from './application/ports';
 import { ProcessWagerTransactionUseCase } from './application/process-wager-transaction.use-case';
+import { ReconcileWalletUseCase } from './application/reconcile-wallet.use-case';
 import { PublishOutboxUseCase } from './application/publish-outbox.use-case';
 import { DEFAULT_REPROCESS_BATCH_SIZE, ReprocessPendingReferencesUseCase } from './application/reprocess-pending-references.use-case';
 import { optionalPositiveInt } from './infrastructure/env';
@@ -22,6 +23,7 @@ import { DEFAULT_LOCK_TIMEOUT_MS, MikroOrmUnitOfWork } from './infrastructure/pe
 import { describeError, logJson } from './infrastructure/observability/json-log';
 import { Metrics } from './infrastructure/observability/metrics';
 import { ObservedProcessing } from './infrastructure/observability/observed-processing';
+import { ObservedReconciliation } from './infrastructure/observability/observed-reconciliation';
 import { createOrmConfig } from './infrastructure/persistence/orm.config';
 import { PollingWorker } from './infrastructure/workers/polling-worker';
 import { HttpExceptionFilter } from './interface/http/http-exception.filter';
@@ -72,6 +74,11 @@ const DEFAULT_HEALTH_CHECK_TIMEOUT_MS = 2000;
     },
     { provide: CreateWalletUseCase, inject: [UNIT_OF_WORK], useFactory: (uow: UnitOfWork) => new CreateWalletUseCase(uow) },
     { provide: GetWalletUseCase, inject: [UNIT_OF_WORK], useFactory: (uow: UnitOfWork) => new GetWalletUseCase(uow) },
+    {
+      provide: ReconcileWalletUseCase,
+      inject: [UNIT_OF_WORK, METRICS],
+      useFactory: (uow: UnitOfWork, metrics: Metrics) => new ReconcileWalletUseCase(uow, new ObservedReconciliation(metrics, logJson)),
+    },
     { provide: ListLedgerUseCase, inject: [UNIT_OF_WORK], useFactory: (uow: UnitOfWork) => new ListLedgerUseCase(uow) },
     {
       provide: ProcessWagerTransactionUseCase,

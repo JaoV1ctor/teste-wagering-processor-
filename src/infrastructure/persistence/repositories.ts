@@ -1,8 +1,8 @@
 import { type EntityManager, UniqueConstraintViolationException } from '@mikro-orm/postgresql';
 import { IdempotencyConflictError, WalletAlreadyExistsError } from '../../application/errors';
 import type {
-  ClaimedPendingReference, InboxRepository, LedgerRecord, LedgerRepository, ListLedgerOptions, OutboxRepository, WagerTransactionRepository,
-  WalletRepository,
+  ClaimedPendingReference, InboxRepository, LedgerRecord, LedgerRepository, LedgerSummary, ListLedgerOptions, OutboxRepository,
+  WagerTransactionRepository, WalletRepository,
 } from '../../application/ports';
 import type { InboxMessage } from '../../domain/inbox-message';
 import type { LedgerEntry } from '../../domain/ledger-entry';
@@ -158,6 +158,27 @@ export class MikroOrmLedgerRepository implements LedgerRepository {
   async add(entry: LedgerEntry): Promise<void> {
     this.em.persist(LedgerEntryMapper.toEntity(entry));
     await this.em.flush();
+  }
+
+  async summarize(walletId: string): Promise<LedgerSummary | undefined> {
+    const rows = await this.em.execute<
+      { currency: string; stored: string; calculated: string; difference: string; consistent: boolean; entries: string }[]
+    >(
+      `select w.currency, w.balance::text as stored, s.calculated::text as calculated, (w.balance - s.calculated)::text as difference,
+              (w.balance = s.calculated) as consistent, s.entries::text as entries
+         from wallets w
+        cross join lateral (
+          select coalesce(sum(case l.direction when 'CREDIT' then l.amount else -l.amount end), 0)::numeric(38, 2) as calculated, count(*) as entries
+            from wallet_ledger_entries l where l.wallet_id = w.id) s
+        where w.id = ?`,
+      [walletId],
+    );
+    const row = rows[0];
+    if (!row) return undefined;
+    return {
+      currency: row.currency, storedBalance: row.stored, calculatedBalance: row.calculated, difference: row.difference, consistent: row.consistent,
+      checkedEntries: Number.parseInt(row.entries, 10),
+    };
   }
 
   async listByWallet(walletId: string, { afterSeq, limit }: ListLedgerOptions): Promise<LedgerRecord[]> {
