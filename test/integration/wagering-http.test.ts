@@ -200,6 +200,18 @@ describe('POST /wagering/transactions — validação (400)', () => {
     expect(res.body.code).toBe('VALIDATION_ERROR');
   });
 
+  test.each(['nao-e-uuid', '123', '00000000-0000-0000-0000-00000000000', `${uuid()}; drop table wallets`])(
+    'walletId %p: 400 na borda, antes de qualquer SQL (o Postgres nunca vê o valor: sem 22P02 vazando como 500) e nada persistido',
+    async (walletId) => {
+      const payload = wagerPayload({ walletId, playerId: uuid() });
+      const res = await post(payload);
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+      expect(res.body.details).toEqual([{ path: 'walletId', message: expect.any(String) }]);
+      expect(await rows('select 1 from wager_transactions where provider_id = $1 and external_transaction_id = $2', [payload.providerId, payload.externalTransactionId])).toHaveLength(0);
+    },
+  );
+
   test('referenceExternalTransactionId em WIN: 400 explicando que ainda não é suportado, e nada é persistido', async () => {
     const wallet = await openWallet(api, '100.00');
     const payload = { ...wagerPayload(wallet, { kind: 'WIN' }), referenceExternalTransactionId: 'bet-1' };
