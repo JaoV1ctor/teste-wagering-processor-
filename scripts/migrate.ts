@@ -17,7 +17,7 @@ try {
   const migrator = orm.migrator;
   // down sem argumento desfaz UMA versão (typings do IMigrator.down)
   const done = direction === 'up' ? await migrator.up() : await migrator.down();
-  console.log(`${direction}: ${done.length} migration(s) executada(s)`, done.map((m) => m.name));
+  process.stdout.write(`${direction}: ${done.length} migration(s) executada(s) ${done.map((m) => m.name).join(', ')}\n`);
 } finally {
   await orm.close();
 }

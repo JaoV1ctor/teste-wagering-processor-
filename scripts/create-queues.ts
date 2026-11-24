@@ -37,5 +37,5 @@ export function createSqsClient(): SQSClient {
 
 if (import.meta.main) {
   const queues = await createQueues(createSqsClient());
-  for (const [name, q] of Object.entries(queues)) console.log(name, q.url);
+  for (const [name, q] of Object.entries(queues)) process.stdout.write(`${name} ${q.url}\n`);
 }
