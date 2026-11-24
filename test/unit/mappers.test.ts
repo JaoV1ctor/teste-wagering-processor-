@@ -102,6 +102,8 @@ describe('OutboxMessageMapper', () => {
     return OutboxMessage.enqueue(WagerTransactionProcessed.from(tx, { eventId: uuid(), correlationId: 'c', occurredAt: now }));
   }
 
+  const snapshot = (m: OutboxMessage) => [m.id, m.aggregateId, m.eventType, m.payload, m.occurredAt, m.attempts, m.nextAttemptAt, m.publishedAt];
+
   test('ida e volta preserva o envelope e o estado de publicação; opcionais ausentes viram null e voltam a undefined', () => {
     const original = message();
     original.scheduleRetry(now, () => 0);
@@ -109,7 +111,7 @@ describe('OutboxMessageMapper', () => {
     expect(entity).toBeInstanceOf(OutboxMessageEntity);
     expect(entity.publishedAt).toBeNull();
     expect(entity.attempts).toBe(1);
-    expect(OutboxMessageMapper.toDomain(entity).toState()).toEqual(original.toState());
+    expect(snapshot(OutboxMessageMapper.toDomain(entity))).toEqual(snapshot(original));
 
     original.markPublished(now);
     expect(OutboxMessageMapper.toDomain(OutboxMessageMapper.toEntity(original)).publishedAt).toEqual(now);

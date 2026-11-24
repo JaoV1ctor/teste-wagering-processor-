@@ -57,12 +57,14 @@ describe('OutboxMessage', () => {
     expect(message.isPending()).toBe(true);
   });
 
-  test('rehydrate restaura o estado sem revalidar; toState devolve cópia', () => {
-    const message = OutboxMessage.enqueue(event());
-    message.scheduleRetry(at, () => 0);
-    const copy = OutboxMessage.rehydrate(message.toState());
-    expect(copy.toState()).toEqual(message.toState());
-    expect(copy.attempts).toBe(1);
+  test('rehydrate restaura o estado sem revalidar', () => {
+    const publishedAt = new Date(at.getTime() + 5000);
+    const message = OutboxMessage.rehydrate({
+      id: EVENT_ID, aggregateId: 'agg', eventType: 'X', payload: { a: 1 }, occurredAt: at, attempts: 3, nextAttemptAt: publishedAt, publishedAt,
+    });
+    expect([message.id, message.aggregateId, message.eventType, message.payload, message.occurredAt, message.attempts, message.nextAttemptAt, message.publishedAt])
+      .toEqual([EVENT_ID, 'agg', 'X', { a: 1 }, at, 3, publishedAt, publishedAt]);
+    expect(message.isPending()).toBe(false);
   });
 });
 

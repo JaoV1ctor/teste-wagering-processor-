@@ -67,10 +67,6 @@ export class OutboxMessage {
     this.state = { ...this.state, attempts, nextAttemptAt: new Date(now.getTime() + outboxRetryDelayMs(attempts, random)) };
   }
 
-  toState(): OutboxMessageState {
-    return { ...this.state };
-  }
-
   private assertPending(attempted: string): void {
     if (!this.isPending()) throw new InvalidOutboxMessageError(`Evento ${this.state.id} já foi publicado e não aceita ${attempted}`);
   }
