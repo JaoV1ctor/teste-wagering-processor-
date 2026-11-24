@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { HttpException } from '@nestjs/common';
 import { z } from 'zod';
-import { InvalidCursorError, TransientInfrastructureError, WalletAlreadyExistsError, WalletNotFoundError } from '../../src/application/errors';
+import {
+  IdempotencyConflictError, InvalidCursorError, TransientInfrastructureError, WagerTransactionNotFoundError, WalletAlreadyExistsError, WalletNotFoundError,
+} from '../../src/application/errors';
 import { InsufficientBalanceError, InvalidMoneyError } from '../../src/domain/errors';
 import { toHttpError } from '../../src/interface/http/error-mapper';
 
@@ -29,6 +31,18 @@ describe('toHttpError (SPEC §5.2)', () => {
     const { status, body } = toHttpError(new WalletAlreadyExistsError());
     expect(status).toBe(409);
     expect(body.code).toBe('WALLET_ALREADY_EXISTS');
+  });
+
+  test('conflito de idempotência -> 409 IDEMPOTENCY_CONFLICT', () => {
+    const { status, body } = toHttpError(new IdempotencyConflictError());
+    expect(status).toBe(409);
+    expect(body.code).toBe('IDEMPOTENCY_CONFLICT');
+  });
+
+  test('transação inexistente -> 404 TRANSACTION_NOT_FOUND', () => {
+    const { status, body } = toHttpError(new WagerTransactionNotFoundError());
+    expect(status).toBe(404);
+    expect(body.code).toBe('TRANSACTION_NOT_FOUND');
   });
 
   test('falha transitória -> 503 com Retry-After', () => {

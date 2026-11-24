@@ -14,7 +14,7 @@ export class ZodValidationPipe<T extends z.ZodType> implements PipeTransform<unk
   }
 }
 
-const moneySchema = z
+export const moneySchema = z
   .strictObject({ amount: z.string(), currency: z.string() })
   .transform((raw, ctx): Money => {
     try {

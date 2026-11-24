@@ -1,6 +1,8 @@
 import { HttpException } from '@nestjs/common';
 import { ZodError } from 'zod';
-import { InvalidCursorError, TransientInfrastructureError, WalletAlreadyExistsError, WalletNotFoundError } from '../../application/errors';
+import {
+  IdempotencyConflictError, InvalidCursorError, TransientInfrastructureError, WagerTransactionNotFoundError, WalletAlreadyExistsError, WalletNotFoundError,
+} from '../../application/errors';
 
 export interface ErrorBody {
   code: string;
@@ -27,6 +29,8 @@ export function toHttpError(error: unknown): HttpErrorResponse {
   }
   if (error instanceof InvalidCursorError) return { status: 400, body: { code: 'INVALID_CURSOR', message: error.message } };
   if (error instanceof WalletNotFoundError) return { status: 404, body: { code: 'WALLET_NOT_FOUND', message: error.message } };
+  if (error instanceof WagerTransactionNotFoundError) return { status: 404, body: { code: 'TRANSACTION_NOT_FOUND', message: error.message } };
+  if (error instanceof IdempotencyConflictError) return { status: 409, body: { code: 'IDEMPOTENCY_CONFLICT', message: error.message } };
   if (error instanceof WalletAlreadyExistsError) return { status: 409, body: { code: 'WALLET_ALREADY_EXISTS', message: error.message } };
   if (error instanceof TransientInfrastructureError) {
     return { status: 503, body: { code: 'SERVICE_UNAVAILABLE', message: 'Serviço temporariamente indisponível; reenvie' }, headers: { 'Retry-After': '1' } };

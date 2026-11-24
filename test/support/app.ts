@@ -18,7 +18,7 @@ export interface ApiBody {
 export interface Api {
   app: INestApplication;
   url: string;
-  call(method: string, path: string, body?: unknown): Promise<{ status: number; body: any; headers: Headers }>;
+  call(method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<{ status: number; body: any; headers: Headers }>;
   close(): Promise<void>;
 }
 
@@ -30,9 +30,9 @@ export async function startApi(): Promise<Api> {
   return {
     app,
     url,
-    async call(method, path, body) {
+    async call(method, path, body, headers = {}) {
       const raw = body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body);
-      const res = await fetch(`${url}${path}`, { method, headers: { 'content-type': 'application/json' }, ...(raw === undefined ? {} : { body: raw }) });
+      const res = await fetch(`${url}${path}`, { method, headers: { 'content-type': 'application/json', ...headers }, ...(raw === undefined ? {} : { body: raw }) });
       return { status: res.status, body: await res.json(), headers: res.headers };
     },
     close: () => app.close(),
