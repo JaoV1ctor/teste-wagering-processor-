@@ -17,5 +17,5 @@ const results = await Promise.all(
   }),
 );
 await api.close();
-console.log(`RESULT:${JSON.stringify(results)}`);
+process.stdout.write(`RESULT:${JSON.stringify(results)}\n`);
 process.exit(0);

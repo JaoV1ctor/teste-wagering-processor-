@@ -50,7 +50,7 @@ const money = (amount: string) => ({ amount, currency: 'BRL' });
 const job = (payload: ReturnType<typeof wagerPayload>): Job => ({ payload, key: defaultKey(payload) });
 
 test(`#4 ${PROCESSES} processos reais: mesmas apostas em todos, saldo disputado em outra wallet; invariantes mantidas`, async () => {
-  // Wallet A: 30 BETs de 10,00 (saldo 1000,00); TODOS os processos enviam as 30 => cada uma deve ser debitada 1 única vez.
+  // Wallet A: 30 BETs de 10,00 (saldo 1000,00); cada processo envia as 30 => cada uma deve ser debitada 1 única vez.
   const walletA = await openWallet(api, '1000.00');
   const sharedBets = Array.from({ length: 30 }, () => wagerPayload(walletA, { money: money('10.00') }));
 
