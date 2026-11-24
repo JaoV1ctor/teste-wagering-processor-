@@ -18,6 +18,9 @@ export interface TestQueues {
   names: { queueName: string; deadLetterQueueName: string };
   mainUrl: string;
   dlqUrl: string;
+  /** Fila padrão de eventos de integração (destino do outbox). */
+  eventsQueueName: string;
+  eventsUrl: string;
 }
 
 export async function newQueues(client: SQSClient): Promise<TestQueues> {
@@ -27,6 +30,8 @@ export async function newQueues(client: SQSClient): Promise<TestQueues> {
     names: { queueName: `${prefix}wager-transactions.fifo`, deadLetterQueueName: `${prefix}wager-transactions-dlq.fifo` },
     mainUrl: created['wager-transactions.fifo']!.url,
     dlqUrl: created['wager-transactions-dlq.fifo']!.url,
+    eventsQueueName: `${prefix}wager-events`,
+    eventsUrl: created['wager-events']!.url,
   };
 }
 

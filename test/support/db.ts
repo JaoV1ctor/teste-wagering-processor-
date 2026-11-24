@@ -93,6 +93,11 @@ export async function ledgerBalance(probe: pg.Pool, walletId: string): Promise<{
   return { stored: row.stored, rebuilt: row.rebuilt, entries: Number.parseInt(row.entries, 10) };
 }
 
+/** Isola o teste: eventos que outros testes deixaram sem publicar saem da fila do outbox (`published_at` preenchido) e nenhum publisher os reivindica. */
+export async function parkOutbox(probe: pg.Pool): Promise<void> {
+  await probe.query('update outbox_messages set published_at = now() where published_at is null');
+}
+
 /**
  * Isola o teste: transações PENDING_REFERENCE de outros testes (que ninguém resolve) passam a vencer no "infinito" e deixam de ser
  * reivindicadas. O trigger permite mudar só `next_attempt_at` de uma transação não terminal.

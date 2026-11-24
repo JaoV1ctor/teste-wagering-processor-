@@ -1,5 +1,6 @@
 import type { InboxMessage } from '../domain/inbox-message';
 import type { LedgerEntry } from '../domain/ledger-entry';
+import type { OutboxMessage } from '../domain/outbox-message';
 import type { WagerTransaction } from '../domain/wager-transaction';
 import type { Wallet } from '../domain/wallet';
 
@@ -76,11 +77,32 @@ export interface InboxRepository {
   markProcessed(message: InboxMessage): Promise<void>;
 }
 
+export interface OutboxRepository {
+  /** `INSERT` do evento. Último passo de uma transação (wallet -> transação -> ledger -> outbox), na MESMA transação SQL do fato. */
+  add(message: OutboxMessage): Promise<void>;
+  /**
+   * Claim por lease (SPEC D7): numa transação curta, escolhe até `limit` eventos não publicados e vencidos (`next_attempt_at <= now`)
+   * com `FOR UPDATE SKIP LOCKED` e os agenda para `leaseUntil`. Publishers concorrentes recebem lotes disjuntos; se um morrer,
+   * o evento volta a ficar elegível quando o lease vencer. A publicação acontece depois, fora desta transação. Do mais antigo ao mais novo.
+   */
+  claimDue(now: Date, limit: number, leaseUntil: Date): Promise<OutboxMessage[]>;
+  /** Grava `published_at`. Não altera um evento que já foi publicado (outro publisher pode ter chegado antes). */
+  markPublished(message: OutboxMessage): Promise<void>;
+  /** Grava `attempts` e `next_attempt_at` depois de uma falha. Não altera um evento que já foi publicado. */
+  scheduleRetry(message: OutboxMessage): Promise<void>;
+}
+
+/** Destino dos eventos (a fila `wager-events`). Lança se não conseguiu entregar; entregar duas vezes é seguro (o consumidor deduplica por `eventId`). */
+export interface EventPublisher {
+  publish(message: OutboxMessage): Promise<void>;
+}
+
 export interface Repositories {
   wallets: WalletRepository;
   transactions: WagerTransactionRepository;
   ledger: LedgerRepository;
   inbox: InboxRepository;
+  outbox: OutboxRepository;
 }
 
 export interface UnitOfWork {

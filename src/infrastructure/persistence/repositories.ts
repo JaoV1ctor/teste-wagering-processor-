@@ -1,16 +1,20 @@
 import { type EntityManager, UniqueConstraintViolationException } from '@mikro-orm/postgresql';
 import { IdempotencyConflictError, WalletAlreadyExistsError } from '../../application/errors';
 import type {
-  ClaimedPendingReference, InboxRepository, LedgerRecord, LedgerRepository, ListLedgerOptions, WagerTransactionRepository, WalletRepository,
+  ClaimedPendingReference, InboxRepository, LedgerRecord, LedgerRepository, ListLedgerOptions, OutboxRepository, WagerTransactionRepository,
+  WalletRepository,
 } from '../../application/ports';
 import type { InboxMessage } from '../../domain/inbox-message';
 import type { LedgerEntry } from '../../domain/ledger-entry';
+import type { OutboxMessage } from '../../domain/outbox-message';
 import type { WagerTransaction } from '../../domain/wager-transaction';
 import type { Wallet } from '../../domain/wallet';
 import { InboxMessageEntity } from './inbox-message.entity';
 import { InboxMessageMapper } from './inbox-message.mapper';
 import { LedgerEntryEntity } from './ledger-entry.entity';
 import { LedgerEntryMapper } from './ledger-entry.mapper';
+import { OutboxMessageEntity } from './outbox-message.entity';
+import { OutboxMessageMapper } from './outbox-message.mapper';
 import { WagerTransactionEntity } from './wager-transaction.entity';
 import { WagerTransactionMapper } from './wager-transaction.mapper';
 import { WalletEntity } from './wallet.entity';
@@ -154,6 +158,49 @@ export class MikroOrmLedgerRepository implements LedgerRepository {
       { orderBy: { seq: 'asc' }, limit },
     );
     return entities.map((entity) => ({ seq: BigInt(entity.seq ?? ''), entry: LedgerEntryMapper.toDomain(entity) }));
+  }
+}
+
+export class MikroOrmOutboxRepository implements OutboxRepository {
+  constructor(private readonly em: EntityManager) {}
+
+  async add(message: OutboxMessage): Promise<void> {
+    this.em.persist(OutboxMessageMapper.toEntity(message));
+    await this.em.flush();
+  }
+
+  /**
+   * O CTE com `FOR UPDATE SKIP LOCKED` trava as linhas escolhidas uma única vez; o UPDATE só as empurra para o fim do lease.
+   * As linhas são relidas pelo ORM (uma consulta a mais, na mesma transação) para reaproveitar o mapper em vez de converter tipos do driver à mão.
+   */
+  async claimDue(now: Date, limit: number, leaseUntil: Date): Promise<OutboxMessage[]> {
+    const claimed = await this.em.execute<{ id: string }[]>(
+      `with due as (
+         select id from outbox_messages
+          where published_at is null and next_attempt_at <= ?::timestamptz
+          order by next_attempt_at
+          limit ?
+          for update skip locked)
+       update outbox_messages o set next_attempt_at = ?::timestamptz
+         from due where o.id = due.id
+       returning o.id`,
+      [now.toISOString(), limit, leaseUntil.toISOString()],
+    );
+    if (claimed.length === 0) return [];
+    const entities = await this.em.find(OutboxMessageEntity, { id: { $in: claimed.map((row) => row.id) } }, { orderBy: { occurredAt: 'asc' } });
+    return entities.map((entity) => OutboxMessageMapper.toDomain(entity));
+  }
+
+  async markPublished(message: OutboxMessage): Promise<void> {
+    await this.em.nativeUpdate(OutboxMessageEntity, { id: message.id, publishedAt: null }, { publishedAt: message.publishedAt ?? null });
+  }
+
+  async scheduleRetry(message: OutboxMessage): Promise<void> {
+    await this.em.nativeUpdate(
+      OutboxMessageEntity,
+      { id: message.id, publishedAt: null },
+      { attempts: message.attempts, nextAttemptAt: message.nextAttemptAt },
+    );
   }
 }
 

@@ -3,10 +3,14 @@ import { describe, expect, test } from 'bun:test';
 import { FailureCode } from '../../src/domain/failure-code';
 import { LedgerDirection, LedgerEntry } from '../../src/domain/ledger-entry';
 import { Money } from '../../src/domain/money';
+import { OutboxMessage } from '../../src/domain/outbox-message';
 import { WagerTransaction, WagerTransactionKind } from '../../src/domain/wager-transaction';
+import { WagerTransactionProcessed } from '../../src/domain/events/wager-transaction-processed';
 import { Wallet } from '../../src/domain/wallet';
 import { LedgerEntryEntity } from '../../src/infrastructure/persistence/ledger-entry.entity';
 import { LedgerEntryMapper } from '../../src/infrastructure/persistence/ledger-entry.mapper';
+import { OutboxMessageEntity } from '../../src/infrastructure/persistence/outbox-message.entity';
+import { OutboxMessageMapper } from '../../src/infrastructure/persistence/outbox-message.mapper';
 import { WagerTransactionEntity } from '../../src/infrastructure/persistence/wager-transaction.entity';
 import { WagerTransactionMapper } from '../../src/infrastructure/persistence/wager-transaction.mapper';
 import { WalletEntity } from '../../src/infrastructure/persistence/wallet.entity';
@@ -85,5 +89,29 @@ describe('WagerTransactionMapper', () => {
     const entity = WagerTransactionMapper.toEntity(tx);
     expect(entity.failureCode).toBe('INSUFFICIENT_BALANCE');
     expect(WagerTransactionMapper.toDomain(entity).toState()).toEqual(tx.toState());
+  });
+});
+
+describe('OutboxMessageMapper', () => {
+  function message(): OutboxMessage {
+    const tx = WagerTransaction.create({
+      id: uuid(), providerId: 'p', externalTransactionId: 'x', idempotencyKey: 'p:x', payloadHash: 'a'.repeat(64), walletId: uuid(), playerId: uuid(),
+      roundId: 'r', gameId: 'g', kind: WagerTransactionKind.Loss, money: brl('5.00'), now,
+    });
+    tx.markProcessed({ observedBalance: brl('5.00'), at: now });
+    return OutboxMessage.enqueue(WagerTransactionProcessed.from(tx, { eventId: uuid(), correlationId: 'c', occurredAt: now }));
+  }
+
+  test('ida e volta preserva o envelope e o estado de publicação; opcionais ausentes viram null e voltam a undefined', () => {
+    const original = message();
+    original.scheduleRetry(now, () => 0);
+    const entity = OutboxMessageMapper.toEntity(original);
+    expect(entity).toBeInstanceOf(OutboxMessageEntity);
+    expect(entity.publishedAt).toBeNull();
+    expect(entity.attempts).toBe(1);
+    expect(OutboxMessageMapper.toDomain(entity).toState()).toEqual(original.toState());
+
+    original.markPublished(now);
+    expect(OutboxMessageMapper.toDomain(OutboxMessageMapper.toEntity(original)).publishedAt).toEqual(now);
   });
 });

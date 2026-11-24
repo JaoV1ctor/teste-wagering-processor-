@@ -1,6 +1,8 @@
 import type { EntityManager, MikroORM } from '@mikro-orm/postgresql';
 import type { Repositories, UnitOfWork } from '../../application/ports';
-import { MikroOrmInboxRepository, MikroOrmLedgerRepository, MikroOrmWagerTransactionRepository, MikroOrmWalletRepository } from './repositories';
+import {
+  MikroOrmInboxRepository, MikroOrmLedgerRepository, MikroOrmOutboxRepository, MikroOrmWagerTransactionRepository, MikroOrmWalletRepository,
+} from './repositories';
 import { type RetryOptions, withTransientRetry } from './transient-retry';
 
 const repositoriesFor = (em: EntityManager): Repositories => ({
@@ -8,6 +10,7 @@ const repositoriesFor = (em: EntityManager): Repositories => ({
   transactions: new MikroOrmWagerTransactionRepository(em),
   ledger: new MikroOrmLedgerRepository(em),
   inbox: new MikroOrmInboxRepository(em),
+  outbox: new MikroOrmOutboxRepository(em),
 });
 
 /**
