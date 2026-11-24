@@ -15,7 +15,6 @@ describe('parseWagerMessage (README §10)', () => {
   test('mensagem do README vira messageId + comando com Money (nunca number)', () => {
     const parsed = parse(envelope());
     expect(parsed.messageId).toBe('msg-123');
-    expect(parsed.occurredAt).toEqual(new Date('2026-07-29T15:00:00.000Z'));
     expect(parsed.command.idempotencyKey).toBe('provider-a:transaction-123');
     expect(parsed.command.walletId).toBe(data.walletId);
     expect(parsed.command.money.toString()).toBe('25.00');

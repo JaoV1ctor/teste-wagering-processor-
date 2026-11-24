@@ -42,6 +42,7 @@ export class UnknownMessageTypeError extends MalformedMessageError {
 const Envelope = z.strictObject({
   messageId: z.string().min(1).max(128),
   type: z.string().min(1),
+  /** Validado (faz parte do contrato do README §10), mas não é usado: a ordem vem do SQS FIFO e do banco, não do relógio do produtor. */
   occurredAt: z.iso.datetime(),
   data: z.unknown(),
 });
@@ -53,7 +54,6 @@ const WagerTransactionData = z
 
 export interface ParsedWagerMessage {
   messageId: string;
-  occurredAt: Date;
   command: ProcessWagerCommand;
 }
 
@@ -76,7 +76,6 @@ export function parseWagerMessage(body: string): ParsedWagerMessage {
   const { referenceExternalTransactionId, ...rest } = data.data;
   return {
     messageId: envelope.data.messageId,
-    occurredAt: new Date(envelope.data.occurredAt),
     command: { ...rest, ...(referenceExternalTransactionId === undefined ? {} : { referenceExternalTransactionId }) },
   };
 }
