@@ -6,6 +6,7 @@ import { TransientInfrastructureError } from '../../application/errors';
 const TRANSIENT_CODES = new Set([
   '40P01', // deadlock_detected
   '40001', // serialization_failure
+  '55P03', // lock_not_available: lock_timeout estourou; quem segurava o lock pode ter terminado no reenvio
   '57P01', // admin_shutdown
   '08000', '08003', '08006', // connection_exception, connection_does_not_exist, connection_failure
   'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT',

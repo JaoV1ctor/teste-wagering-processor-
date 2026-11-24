@@ -7,7 +7,8 @@ import { GetWagerTransactionUseCase } from './application/get-wager-transaction.
 import { ListLedgerUseCase } from './application/list-ledger.use-case';
 import type { UnitOfWork } from './application/ports';
 import { ProcessWagerTransactionUseCase } from './application/process-wager-transaction.use-case';
-import { MikroOrmUnitOfWork } from './infrastructure/persistence/mikro-orm-unit-of-work';
+import { optionalPositiveInt } from './infrastructure/env';
+import { DEFAULT_LOCK_TIMEOUT_MS, MikroOrmUnitOfWork } from './infrastructure/persistence/mikro-orm-unit-of-work';
 import { createOrmConfig } from './infrastructure/persistence/orm.config';
 import { HttpExceptionFilter } from './interface/http/http-exception.filter';
 import { WageringController } from './interface/http/wagering.controller';
@@ -21,7 +22,12 @@ const UNIT_OF_WORK = Symbol('UNIT_OF_WORK');
   controllers: [WalletsController, WageringController],
   providers: [
     { provide: ORM, useFactory: () => MikroORM.init(createOrmConfig()) },
-    { provide: UNIT_OF_WORK, inject: [ORM], useFactory: (orm: MikroORM) => new MikroOrmUnitOfWork(orm) },
+    {
+      provide: UNIT_OF_WORK,
+      inject: [ORM],
+      useFactory: (orm: MikroORM) =>
+        new MikroOrmUnitOfWork(orm, { lockTimeoutMs: optionalPositiveInt('LOCK_TIMEOUT_MS', DEFAULT_LOCK_TIMEOUT_MS) }),
+    },
     { provide: CreateWalletUseCase, inject: [UNIT_OF_WORK], useFactory: (uow: UnitOfWork) => new CreateWalletUseCase(uow) },
     { provide: GetWalletUseCase, inject: [UNIT_OF_WORK], useFactory: (uow: UnitOfWork) => new GetWalletUseCase(uow) },
     { provide: ListLedgerUseCase, inject: [UNIT_OF_WORK], useFactory: (uow: UnitOfWork) => new ListLedgerUseCase(uow) },

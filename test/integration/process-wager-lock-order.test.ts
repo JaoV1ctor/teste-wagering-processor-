@@ -42,6 +42,7 @@ async function emitted(kind: WagerTransactionKind, amount: string): Promise<{ st
 
 const indexOf = (statements: string[], pattern: RegExp): number => statements.findIndex((q) => pattern.test(q));
 const LOCK = /select .*from "?wallets"?.* for no key update/s;
+const LOCK_TIMEOUT = /set_config\('lock_timeout'/;
 const INSERT_TX = /insert into "?wager_transactions"?/;
 const UPDATE_WALLET = /update "?wallets"?/;
 const INSERT_LEDGER = /insert into "?wallet_ledger_entries"?/;
@@ -57,7 +58,8 @@ describe('ordem de locks e escrita do ProcessWagerTransaction', () => {
     const commit = indexOf(statements, /\bcommit\b/);
 
     expect(begin).toBe(0);
-    expect(lock).toBe(1); // a wallet é a PRIMEIRA instrução da transação
+    expect(indexOf(statements, LOCK_TIMEOUT)).toBe(1); // SET LOCAL lock_timeout: não toca tabela, vem antes do lock
+    expect(lock).toBe(2); // a wallet é a primeira instrução que toca uma tabela
     expect(lock).toBeLessThan(insertTx);
     expect(insertTx).toBeLessThan(insertLedger);
     expect(updateWallet).toBeGreaterThan(insertTx);
@@ -68,6 +70,7 @@ describe('ordem de locks e escrita do ProcessWagerTransaction', () => {
   test('nenhuma instrução toca a wallet antes do lock', async () => {
     const { statements } = await emitted(WagerTransactionKind.Bet, '30.00');
     const lock = indexOf(statements, LOCK);
+    expect(lock).toBeGreaterThan(indexOf(statements, LOCK_TIMEOUT));
     expect(statements.slice(0, lock).filter((q) => /wallets|wager_transactions|wallet_ledger_entries/.test(q))).toEqual([]);
   });
 
@@ -79,7 +82,7 @@ describe('ordem de locks e escrita do ProcessWagerTransaction', () => {
 
   test('rejeição (saldo insuficiente): lock -> insert transação -> commit; sem update de wallet nem ledger', async () => {
     const { statements } = await emitted(WagerTransactionKind.Bet, '500.00');
-    expect(indexOf(statements, LOCK)).toBe(1);
+    expect(indexOf(statements, LOCK)).toBe(2);
     expect(indexOf(statements, INSERT_TX)).toBeGreaterThan(1);
     expect(indexOf(statements, UPDATE_WALLET)).toBe(-1);
     expect(indexOf(statements, INSERT_LEDGER)).toBe(-1);
@@ -87,7 +90,7 @@ describe('ordem de locks e escrita do ProcessWagerTransaction', () => {
 
   test('LOSS: lock -> insert transação; sem update de wallet nem ledger', async () => {
     const { statements } = await emitted(WagerTransactionKind.Loss, '30.00');
-    expect(indexOf(statements, LOCK)).toBe(1);
+    expect(indexOf(statements, LOCK)).toBe(2);
     expect(indexOf(statements, UPDATE_WALLET)).toBe(-1);
     expect(indexOf(statements, INSERT_LEDGER)).toBe(-1);
   });

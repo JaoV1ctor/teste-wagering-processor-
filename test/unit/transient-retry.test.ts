@@ -6,7 +6,7 @@ const fast = { attempts: 3, baseDelayMs: 0 };
 const pgError = (code: string) => Object.assign(new Error(`pg ${code}`), { code });
 
 describe('isTransient', () => {
-  test.each(['40P01', '40001', '57P01', '08006', 'ECONNREFUSED', 'ECONNRESET'])('%s é transitório', (code) => {
+  test.each(['40P01', '40001', '55P03', '57P01', '08006', 'ECONNREFUSED', 'ECONNRESET'])('%s é transitório', (code) => {
     expect(isTransient(pgError(code))).toBe(true);
   });
 
