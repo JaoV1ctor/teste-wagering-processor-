@@ -44,7 +44,7 @@ O achado 7 foi corrigido depois, também com os testes primeiro: com a chave glo
 
 ## Resultados
 
-Copiado do relatório gerado pela execução, sem edição.
+Copiado do relatório gerado pela execução. A única edição está nos casos de segredos: as contagens que mudam a cada commit (linhas e commits varridos, strings de conexão encontradas) ficam só no relatório.
 
 Execução de 2026-11-25T18:40:05.741Z, Bun 1.4.4: 92 casos em 10 categorias; 78 passaram, 14 confirmam limitações e 0 falharam.
 
@@ -183,8 +183,8 @@ Execução de 2026-11-25T18:40:05.741Z, Bun 1.4.4: 92 casos em 10 categorias; 78
 | Caso | Esperado | Observado | Resultado |
 | --- | --- | --- | --- |
 | Credenciais reconhecíveis nos arquivos versionados | nenhuma ocorrência | 8 padrões, nenhuma ocorrência | passou |
-| Credenciais reconhecíveis no histórico do git | nenhuma linha adicionada em commit algum | 29074 linhas adicionadas em 108 commits, nenhuma ocorrência | passou |
-| Senhas em strings de conexão versionadas | só as de desenvolvimento local | 5, todas para localhost ou nomes fictícios de teste | passou |
+| Credenciais reconhecíveis no histórico do git | nenhuma linha adicionada em commit algum | todas as linhas adicionadas no histórico foram varridas; nenhuma ocorrência | passou |
+| Senhas em strings de conexão versionadas | só as de desenvolvimento local | todas as encontradas apontam para localhost ou nomes fictícios de teste | passou |
 | .env fora do git, hoje e no histórico | .env ignorado, não rastreado e nunca commitado | ignorado; só .env.example rastreado; nenhum .env em commit algum | passou |
 | .env.example só com valores do ambiente local | exatamente as variáveis e os valores locais previstos; qualquer outro valor reprova | 8 variáveis, todas com os valores do ambiente local | passou |
 | Senha fixa no docker-compose.yml | comportamento atual: credencial de desenvolvimento versionada e porta publicada no host | POSTGRES_PASSWORD de desenvolvimento e portas 5432 e 4566 publicadas em todas as interfaces | limitação confirmada |
