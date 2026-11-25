@@ -103,6 +103,10 @@ Detalhes: [Fase 0](#fase-0--base-técnica-e-spike-de-compatibilidade) e [Fase 2]
 - **Banco**: `NUMERIC(19,2)` e `char(3)`; a entidade declara o valor como `string` e o mapper converte com `Money.fromString`. Nenhum passo intermediário é ponto flutuante.
 - O Postgres arredonda `10.005` em silêncio; por isso a rejeição acontece em `Money`, antes do banco.
 
+**Por que assim.** `bigint` em centavos é exato, tem escala fixa de 2 por construção e não pede dependência. Descartados: `decimal.js` (dependência sem ganho para essa escala) e string pura (sem aritmética segura).
+**Adaptações do esqueleto do enunciado:** o valor é um `bigint` no lugar de `Decimal`; as factories são `fromString`, `fromCents` e `zero`; não há `negate` nem `isNegative`, porque `Money` nunca é negativo: entradas negativas são proibidas, o saldo não pode ser negativo e o sentido do movimento está em `DEBIT`/`CREDIT`.
+A única grandeza com sinal, a `difference` da reconciliação, é calculada no banco e devolvida como string decimal. Moeda é validada pela forma (três letras maiúsculas), não contra a lista ISO-4217.
+
 Alternativas e testes: [Fase 1](#fase-1--domínio-e-wallet).
 
 ### Estratégia transacional e de locks
