@@ -474,3 +474,88 @@ Detalhes:
 - [Cobertura dos testes obrigatórios](docs/ARCHITECTURE.md#cobertura-dos-testes-obrigatórios): cada item e o arquivo e teste que o prova.
 - [docs/LOAD_TEST.md](docs/LOAD_TEST.md): metodologia, resultados, análise e limitações da carga.
 - [docs/SECURITY_TESTS.md](docs/SECURITY_TESTS.md): casos, achados e o que não foi coberto.
+
+## Estrutura de pastas
+
+```
+.
+├── src/
+│   ├── domain/              # TypeScript puro: Money, Wallet, WagerTransaction, ledger, regras e eventos
+│   ├── application/         # casos de uso, portas e payloadHash
+│   ├── infrastructure/
+│   │   ├── persistence/     # entidades MikroORM, mappers, repositórios e unit of work
+│   │   ├── messaging/       # cliente e adaptadores SQS, configuração do consumidor e do publisher
+│   │   ├── workers/         # laço de fundo dos workers
+│   │   ├── observability/   # métricas e logs JSON
+│   │   ├── health/          # verificações de readiness
+│   │   └── identity/        # adaptador da identidade do provedor (hoje confia no corpo)
+│   ├── interface/
+│   │   ├── http/            # controllers, DTOs, guards e mapeamento de erros
+│   │   └── sqs/             # consumidor e tradução das mensagens
+│   ├── app.module.ts        # composição
+│   └── main.ts              # sobe o HTTP, o consumidor, o worker e o publisher
+├── db/                      # SQL das migrations (up e down) e as classes em db/migrations/
+├── scripts/                 # filas, migrations, envio de mensagem, carga e segurança
+├── test/
+│   ├── unit/
+│   ├── integration/
+│   ├── concurrency/
+│   ├── security/
+│   └── support/             # apoio dos testes, inclusive o gerador de invariantes aleatórias
+├── docs/                    # arquitetura, teste de carga e testes de segurança
+├── docker-compose.yml       # PostgreSQL e MiniStack
+└── .env.example
+```
+
+## Limitações conhecidas
+
+A lista completa, com justificativas e trade-offs, está em [Limitações conhecidas](docs/ARCHITECTURE.md#limitações-conhecidas).
+
+1. **Sem autenticação nem autorização**, e sem rate limiting; `/metrics` e health são abertos.
+2. **Wallet quente:** escritas na mesma wallet são serializadas. O `lock_timeout` limita cada espera por lock, não a espera total na fila, e não há `statement_timeout`.
+3. **Pool de conexões:** requisições suficientes contra uma wallet travada ocupam as conexões da instância, atrasam as outras wallets e fazem `/health/ready` responder `503`.
+4. **Eventos:** entrega at-least-once e sem ordem (o consumidor deduplica por `eventId` e ordena o saldo por `walletVersion`); no teste de carga, o publisher publicou mais devagar do que os eventos eram gravados.
+5. **Fila de entrada:** não é autenticada, e o inbox deduplica por `(consumidor, messageId)`, não por provedor: os produtores precisam de ids únicos entre si.
+6. **MiniStack não é o SQS da AWS:** o comportamento de FIFO, DLQ, latência e cotas não foi verificado na AWS.
+7. **Reversões:** não há reversão parcial; uma referência que não chega dentro do limite de tentativas vira `REJECTED`.
+8. **Execução:** não há Dockerfile da aplicação, e o projeto só foi executado em Windows 11.
+
+## Solução de problemas
+
+### `/health/ready` responde 503 com `"sqs":"down"` depois de reiniciar os containers
+
+O MiniStack perde as filas ao reiniciar. A aplicação registra `"errorName":"QueueDoesNotExist"` no log. Recrie-as; não é preciso reiniciar a aplicação:
+
+```bash
+bun run infra:queues
+```
+
+Os testes de integração também falham no readiness enquanto as filas não existirem.
+
+### Porta em uso
+
+Com a porta 3000 ocupada, a aplicação encerra com `"Failed to start server. Is port 3000 in use?"` e `"errorCode":"EADDRINUSE"`. Encerre o outro processo ou use outra porta (e ajuste a URL dos exemplos):
+
+```bash
+PORT=3001 bun run start
+```
+
+As portas 5432 e 4566 são fixas no `docker-compose.yml`: se um PostgreSQL local ou os containers de outra cópia do projeto as estiverem usando, pare-os antes do `docker compose up`.
+
+### Migration já aplicada
+
+Rodar `bun run migration:up` de novo é seguro e não altera nada:
+
+```
+up: 0 migration(s) executada(s)
+```
+
+### `migration:down` recusa a reversão
+
+A reversão que devolve a unicidade global da `Idempotency-Key` só é possível enquanto nenhuma chave tiver sido usada por mais de um provedor. Depois disso, ela falha e nada muda, porque transações não se apagam nem se reescrevem:
+
+```
+UniqueConstraintViolationException: 002 down: 1 idempotency_key(s) usada(s) por mais de um provedor; a unicidade global não pode ser restaurada
+```
+
+Em um ambiente descartável, a saída é recriar o banco.
