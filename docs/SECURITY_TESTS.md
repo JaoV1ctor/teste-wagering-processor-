@@ -46,7 +46,7 @@ O achado 7 foi corrigido depois, também com os testes primeiro: com a chave glo
 
 Copiado do relatório gerado pela execução, sem edição.
 
-Execução de 2026-11-25T18:00:45.939Z, Bun 1.4.4: 92 casos em 10 categorias; 78 passaram, 14 confirmam limitações e 0 falharam.
+Execução de 2026-11-25T18:40:05.741Z, Bun 1.4.4: 92 casos em 10 categorias; 78 passaram, 14 confirmam limitações e 0 falharam.
 
 ### 1. Injeção e entradas malformadas
 
@@ -183,7 +183,7 @@ Execução de 2026-11-25T18:00:45.939Z, Bun 1.4.4: 92 casos em 10 categorias; 78
 | Caso | Esperado | Observado | Resultado |
 | --- | --- | --- | --- |
 | Credenciais reconhecíveis nos arquivos versionados | nenhuma ocorrência | 8 padrões, nenhuma ocorrência | passou |
-| Credenciais reconhecíveis no histórico do git | nenhuma linha adicionada em commit algum | 27976 linhas adicionadas em 101 commits, nenhuma ocorrência | passou |
+| Credenciais reconhecíveis no histórico do git | nenhuma linha adicionada em commit algum | 29074 linhas adicionadas em 108 commits, nenhuma ocorrência | passou |
 | Senhas em strings de conexão versionadas | só as de desenvolvimento local | 5, todas para localhost ou nomes fictícios de teste | passou |
 | .env fora do git, hoje e no histórico | .env ignorado, não rastreado e nunca commitado | ignorado; só .env.example rastreado; nenhum .env em commit algum | passou |
 | .env.example sem credenciais | toda variável de credencial ou conexão vazia | 8 variáveis declaradas, todas vazias | passou |
