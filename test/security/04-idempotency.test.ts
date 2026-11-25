@@ -1,5 +1,5 @@
-// Idempotência sob abuso, com atenção a dois provedores: a Idempotency-Key é única no serviço inteiro. Nenhum caso pode entregar a um
-// provedor dado algum de outro.
+// Idempotência sob abuso, com atenção a dois provedores: a Idempotency-Key vale dentro de cada provedor. Nenhum caso pode entregar a um
+// provedor dado algum de outro, nem deixar que um atrapalhe a chave do outro.
 import { afterAll, beforeAll, expect } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { ledgerBalance } from '../support/db';
@@ -42,12 +42,12 @@ function expectNothingFrom(secrets: readonly string[], reply: Reply, sentByB: un
   expect(leaked).toEqual([]);
 }
 
-securityCase('Mesma chave com cada campo de negócio diferente', '409 IDEMPOTENCY_CONFLICT; banco inalterado', async () => {
+securityCase('Mesmo provedor, mesma chave, cada campo de negócio diferente', '409 IDEMPOTENCY_CONFLICT; banco inalterado', async () => {
   const { payload, key } = await victim();
   const other = await openWallet(env.api, '10.00');
   const changes: Partial<WagerPayload>[] = [
     { money: money('123.46') }, { money: { amount: '123.45', currency: 'USD' } }, { kind: 'WIN' }, { roundId: 'x' }, { gameId: 'x' }, { externalTransactionId: 'x' },
-    { playerId: uuid() }, { walletId: other.walletId }, { providerId: 'x' },
+    { playerId: uuid() }, { walletId: other.walletId },
   ];
   const before = await snapshot(env.probe);
   const statuses: number[] = [];
@@ -61,47 +61,53 @@ securityCase('Mesma chave com cada campo de negócio diferente', '409 IDEMPOTENC
   return `${statuses.length} variações: ${tally(statuses)}; banco inalterado`;
 });
 
-securityCase('PROVEDOR DIFERENTE usa a chave de outro, com a própria wallet', '409 sem resultado nem dado algum do primeiro; banco inalterado', async () => {
+securityCase('PROVEDOR DIFERENTE usa a chave de outro, com a própria wallet', '201 com transação própria; nada do primeiro na resposta; saldo do primeiro inalterado', async () => {
   const a = await victim();
   const walletB = await openWallet(env.api, '50.00');
   const payload = wagerPayload(walletB, { providerId: `beta-${uuid()}`, money: money('1.00') });
-  const before = await snapshot(env.probe);
+  const before = await ledgerBalance(env.probe, a.wallet.walletId);
 
   const reply = await submit(payload, a.key);
 
-  expect(reply.status).toBe(409);
-  expect(JSON.parse(reply.text)).toEqual({ code: 'IDEMPOTENCY_CONFLICT', message: 'Conflito de idempotência: a chave ou a identidade do provedor já pertence a outro payload' });
+  expect(reply.status).toBe(201);
+  expect(JSON.parse(reply.text)).toEqual({ transactionId: expect.any(String), status: 'PROCESSED', balance: money('49.00'), idempotentReplay: false });
   expectNothingFrom(a.secrets, reply, payload);
-  expect(await snapshot(env.probe)).toEqual(before);
-  return '409 com corpo fixo (code e message); nenhum dado do primeiro provedor; banco inalterado';
+  expect(await ledgerBalance(env.probe, a.wallet.walletId)).toEqual(before);
+  const replayOfA = await submit(a.payload, a.key);
+  expect(JSON.parse(replayOfA.text)).toMatchObject({ transactionId: a.transactionId, idempotentReplay: true });
+  return '201, transação própria do segundo; saldo do primeiro inalterado e o replay dele continua o original';
 });
 
-securityCase('Provedor diferente copia chave e campos, trocando só o providerId', '409 sem dado do primeiro: o providerId entra no hash', async () => {
+securityCase('Provedor diferente copia chave e campos, trocando só o providerId', 'comportamento atual: nunca recebe o original, mas cria transação própria sobre a wallet citada (não há autenticação)', async () => {
   const a = await victim();
-  const stolen = { ...a.payload, providerId: `beta-${uuid()}` };
-  const before = await snapshot(env.probe);
+  const copied = { ...a.payload, providerId: `beta-${uuid()}` };
+  const before = await ledgerBalance(env.probe, a.wallet.walletId);
 
-  const reply = await submit(stolen, a.key);
+  const reply = await submit(copied, a.key);
 
-  expect(reply.status).toBe(409);
-  expectNothingFrom(a.secrets, reply, stolen);
-  expect(reply.text).not.toContain('transactionId');
-  expect(reply.text).not.toContain('balance');
-  expect(await snapshot(env.probe)).toEqual(before);
-  return '409; sem transactionId, saldo ou status do original';
-});
+  expect(reply.status).toBe(201);
+  const body = JSON.parse(reply.text) as { transactionId: string; idempotentReplay: boolean };
+  expect(body.idempotentReplay).toBe(false);
+  expect(body.transactionId).not.toBe(a.transactionId);
+  expectNothingFrom(a.secrets, reply, copied);
+  expect((await ledgerBalance(env.probe, a.wallet.walletId)).entries).toBe(before.entries + 1);
+  return '201 sem o id nem o saldo do original; a wallet foi debitada de novo, em nome do segundo provedor';
+}, 'limitação');
 
-securityCase('Dois provedores disputam a mesma chave ao mesmo tempo (20 rodadas)', 'um 201 e um 409; o 409 não traz dado do vencedor', async () => {
+securityCase('Dois provedores usam a mesma chave ao mesmo tempo (20 rodadas)', 'os dois 201, cada um com a própria transação; nenhum dado cruzado', async () => {
   const statuses: number[] = [];
   for (let round = 0; round < 20; round += 1) {
-    const [walletA, walletB] = [await openWallet(env.api, '10.00'), await openWallet(env.api, '10.00')];
-    const key = `disputada-${uuid()}`;
-    const payloads = [walletA, walletB].map((wallet, i) => wagerPayload(wallet, { providerId: `p${i}-${uuid()}`, money: money('1.00') }));
+    const wallets = [await openWallet(env.api, '10.00'), await openWallet(env.api, '10.00')];
+    const key = `repartida-${uuid()}`;
+    const payloads = wallets.map((wallet, i) => wagerPayload(wallet, { providerId: `p${i}-${uuid()}`, money: money('1.00') }));
     const replies = await Promise.all(payloads.map((payload) => submit(payload, key)));
-    expect(replies.map((r) => r.status).sort()).toEqual([201, 409]);
-    const loser = replies.findIndex((r) => r.status === 409);
-    const winner = payloads[1 - loser]!;
-    expectNothingFrom([winner.walletId, winner.playerId, winner.externalTransactionId, winner.providerId], replies[loser]!, payloads[loser]);
+    expect(replies.map((r) => r.status)).toEqual([201, 201]);
+    const ids = replies.map((r) => (JSON.parse(r.text) as { transactionId: string }).transactionId);
+    expect(ids[0]).not.toBe(ids[1]);
+    for (const mine of [0, 1]) {
+      const other = payloads[1 - mine]!;
+      expectNothingFrom([ids[1 - mine]!, other.walletId, other.playerId, other.externalTransactionId, other.providerId], replies[mine]!, payloads[mine]);
+    }
     statuses.push(...replies.map((r) => r.status));
   }
   return `${tally(statuses)} em 20 rodadas; nenhum dado cruzado`;
@@ -129,7 +135,7 @@ securityCase('Outro provedor tenta reverter a transação alheia citando o id ex
   return '202 PENDING_REFERENCE, balance null; saldo do primeiro inalterado';
 });
 
-securityCase('Ocupação antecipada da chave: B grava antes a chave que A usaria', 'comportamento atual: A recebe 409 de forma permanente (negação entre provedores)', async () => {
+securityCase('Ocupação antecipada da chave: B grava antes a chave que A usaria', 'A é aceito normalmente: a chave de B não ocupa a de A', async () => {
   const [walletA, walletB] = [await openWallet(env.api, '10.00'), await openWallet(env.api, '10.00')];
   const payloadA = wagerPayload(walletA, { providerId: `alfa-${uuid()}`, money: money('1.00') });
   const recommended = `${payloadA.providerId}:${payloadA.externalTransactionId}`;
@@ -138,10 +144,11 @@ securityCase('Ocupação antecipada da chave: B grava antes a chave que A usaria
   const legit = await submit(payloadA, recommended);
   const retry = await submit(payloadA, recommended);
 
-  expect([squat.status, legit.status, retry.status]).toEqual([201, 409, 409]);
-  expect(await ledgerBalance(env.probe, walletA.walletId)).toMatchObject({ stored: '10.00', entries: 1 });
-  return 'B: 201; A com a chave recomendada: 409, 409; A só consegue com outra chave';
-}, 'limitação');
+  expect([squat.status, legit.status, retry.status]).toEqual([201, 201, 201]);
+  expect(JSON.parse(retry.text)).toEqual({ ...(JSON.parse(legit.text) as object), idempotentReplay: true });
+  expect(await ledgerBalance(env.probe, walletA.walletId)).toMatchObject({ stored: '9.00', entries: 2 });
+  return 'B: 201; A: 201 e depois replay do próprio resultado';
+});
 
 securityCase('Replay idêntico, por quem conhece a chave e todos os campos', 'comportamento atual: devolve o resultado, porque nada identifica quem chama', async () => {
   const a = await victim();

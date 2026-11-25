@@ -142,14 +142,30 @@ securityCase('messageId repetido com conteúdo diferente', 'DLQ INBOX_PAYLOAD_CO
   return poison([['mesmo messageId', JSON.stringify(forged), 'INBOX_PAYLOAD_CONFLICT']]);
 });
 
-securityCase('Outro provedor reutiliza pela fila a chave de um primeiro', 'DLQ IDEMPOTENCY_CONFLICT; nada gravado e nada do primeiro na DLQ', async () => {
+securityCase('Outro provedor reutiliza pela fila a chave de um primeiro', 'as duas aplicadas, cada uma no próprio provedor; nada na DLQ', async () => {
   const first = message({ providerId: 'alfa' });
+  const other = message({ providerId: 'beta', idempotencyKey: first.data.idempotencyKey });
   const before = await ledgerBalance(env.probe, wallet.walletId);
   await send(JSON.stringify(first));
-  await waitFor('primeira aplicada', async () => (await ledgerBalance(env.probe, wallet.walletId)).entries === before.entries + 1);
-  const attack = JSON.stringify(message({ providerId: 'beta', idempotencyKey: first.data.idempotencyKey }));
-  return poison([['chave alheia', attack, 'IDEMPOTENCY_CONFLICT']]); // `poison` confere que a DLQ traz exatamente o corpo do atacante
+  await send(JSON.stringify(other));
+  await waitFor('as duas aplicadas', async () => (await ledgerBalance(env.probe, wallet.walletId)).entries === before.entries + 2);
+  await waitFor('fila de entrada vazia', () => isQueueEmpty(env.sqs, env.queues.mainUrl));
+  expect(await isQueueEmpty(env.sqs, env.queues.dlqUrl)).toBe(true);
+  return '2 lançamentos, DLQ vazia';
 });
+
+securityCase('Outro provedor ocupa antes o messageId de um primeiro', 'comportamento atual: a messageId vale para o consumidor inteiro; a mensagem legítima vai à DLQ', async () => {
+  const messageId = `compartilhada-${uuid()}`;
+  const squatter = message({ providerId: 'beta', messageId });
+  const legit = message({ providerId: 'alfa', messageId });
+  const before = await ledgerBalance(env.probe, wallet.walletId);
+  await send(JSON.stringify(squatter));
+  await waitFor('a primeira aplicada', async () => (await ledgerBalance(env.probe, wallet.walletId)).entries === before.entries + 1);
+  // Outro MessageDeduplicationId: como se o broker já não deduplicasse (a janela dele é de 5 minutos).
+  const summary = await poison([['messageId alheio', JSON.stringify(legit), 'INBOX_PAYLOAD_CONFLICT']]);
+  expect((await env.probe.query('select 1 from wager_transactions where external_transaction_id = $1', [legit.data.externalTransactionId])).rows).toEqual([]);
+  return `a legítima não foi aplicada: ${summary}`;
+}, 'limitação');
 
 securityCase('Logs do consumidor durante os venenos', 'uma linha JSON por evento, sem o corpo da mensagem', async () => {
   const marker = `marca-fila-${uuid()}`;

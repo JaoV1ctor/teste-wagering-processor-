@@ -96,10 +96,11 @@ securityCase('SQL injection na Idempotency-Key e no x-correlation-id', 'aceitos 
   const statuses: number[] = [];
   for (const value of SQL_INJECTIONS) {
     const key = `${value} ${uuid()}`;
-    const reply = await submit(wagerPayload(wallet, { money: { amount: '1.00', currency: 'BRL' } }), key, { 'x-correlation-id': value });
+    const payload = wagerPayload(wallet, { money: { amount: '1.00', currency: 'BRL' } });
+    const reply = await submit(payload, key, { 'x-correlation-id': value });
     statuses.push(reply.status);
     expect(leaksIn(reply.text)).toEqual([]);
-    const { rows } = await env.probe.query('select 1 from wager_transactions where idempotency_key = $1', [key]);
+    const { rows } = await env.probe.query('select 1 from wager_transactions where provider_id = $1 and idempotency_key = $2', [payload.providerId, key]);
     expect(rows).toHaveLength(1);
   }
   expect(statuses.every((status) => status === 201)).toBe(true);
