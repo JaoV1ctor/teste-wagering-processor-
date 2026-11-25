@@ -13,7 +13,7 @@ Decisões, alternativas, trade-offs e limitações do serviço. A primeira parte
 - [Autenticação](#autenticação)
 - [Limitações conhecidas](#limitações-conhecidas)
 - [Detalhes](#detalhes)
-- [Regras e contratos](#regras-e-contratos): [estados](#máquina-de-estados-de-wagertransaction), [códigos de falha](#códigos-de-falha)
+- [Regras e contratos](#regras-e-contratos): [estados](#máquina-de-estados-de-wagertransaction), [códigos de falha](#códigos-de-falha), [payloadHash](#idempotência-e-payloadhash)
 - [Registro de decisões por fase](#registro-de-decisões-por-fase):
   [0, base técnica](#fase-0--base-técnica-e-spike-de-compatibilidade) ·
   [1, domínio e wallet](#fase-1--domínio-e-wallet) ·
@@ -229,6 +229,29 @@ Fonte: `src/domain/failure-code.ts` (12 códigos). A ordem de precedência das r
 | `INTERNAL_PERMANENT_ERROR` (status `FAILED`) | Erro permanente de infraestrutura; previsto no domínio, **nenhum caminho atual o grava** (ver Fase 4) | `422` se existisse | Desistir e contatar o suporte |
 
 Erros sem `failureCode` (`400`, `404`, `409`, `500`, `503`) estão na tabela "Mapeamento HTTP" (Fase 1, decisão 8).
+
+#### Idempotência e payloadHash
+
+Implementação: `src/application/payload-hash.ts`; o caso de uso monta a entrada (`src/application/process-wager-transaction.use-case.ts`), igual para HTTP e SQS.
+
+| Entra no hash | Observação |
+| --- | --- |
+| `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind` | Como recebidos depois da validação, sem aparar nem mudar maiúsculas |
+| `money.amount`, `money.currency` | `amount` normalizado para 2 casas por `Money.toProps()`: `"5"` e `"5.00"` dão o mesmo hash |
+| `referenceExternalTransactionId` | Só quando presente; ausente, a chave não aparece no JSON |
+
+**Fica de fora:** a chave de idempotência (header `Idempotency-Key` ou `data.idempotencyKey`), `correlationId`, `messageId`, `type` e `occurredAt` da mensagem e cabeçalhos como `Authorization`. Campo desconhecido no corpo é recusado na validação, então não há o que ignorar.
+
+**Canonização (`canonicalJson`):** chaves de objeto ordenadas recursivamente (comparação por unidades UTF-16), sem espaços; chaves com valor `undefined` omitidas; arrays mantêm a ordem (o payload atual não tem arrays); escalares serializados por `JSON.stringify`.
+**Hash:** SHA-256 do texto em UTF-8, em hexadecimal (64 caracteres). Exemplo, que é o vetor fixo de `test/unit/payload-hash.test.ts`:
+
+```
+{"externalTransactionId":"ext-1","gameId":"g1","kind":"BET","money":{"amount":"10.00","currency":"BRL"},"playerId":"p1","providerId":"prov","roundId":"r1","walletId":"w1"}
+c35c7153b3f48996a7edd07ab2e00c8b4c871d1b2511ed96f6d5a3194fb0606a
+```
+
+**Uso:** gravado em `wager_transactions.payload_hash` e em `inbox_messages.payload_hash`. Mesma chave e mesmo hash é replay; mesma chave e outro hash é conflito (`409`; na fila, DLQ).
+A transação interna `OPENING` usa o mesmo algoritmo, com `providerId = "internal"` e `roundId = gameId = "opening"`.
 
 ### Registro de decisões por fase
 
