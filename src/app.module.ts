@@ -28,6 +28,7 @@ import { ObservedReconciliation } from './infrastructure/observability/observed-
 import { createOrmConfig } from './infrastructure/persistence/orm.config';
 import { PollingWorker } from './infrastructure/workers/polling-worker';
 import { AuthGuard } from './interface/http/auth.guard';
+import { HideFrameworkHeader } from './interface/http/hide-framework-header';
 import { HttpExceptionFilter } from './interface/http/http-exception.filter';
 import { HealthController, READINESS } from './interface/http/health.controller';
 import { METRICS, MetricsController } from './interface/http/metrics.controller';
@@ -160,6 +161,7 @@ const DEFAULT_HEALTH_CHECK_TIMEOUT_MS = 2000;
       },
     },
     { provide: APP_FILTER, useClass: HttpExceptionFilter },
+    HideFrameworkHeader,
     // Ponto de extensão de autenticação (hoje no-op). `useExisting` mantém uma instância só, alcançável pelo próprio token.
     AuthGuard,
     { provide: APP_GUARD, useExisting: AuthGuard },

@@ -138,6 +138,15 @@ securityCase('Rota inexistente', '404 em JSON, sem banner nem página do framewo
   return `${tally(replies.map((r) => r.status))}; corpo fixo`;
 });
 
+securityCase('Cabeçalho que anuncia o framework', 'sem X-Powered-By nem Server, em respostas de sucesso, erro e rota inexistente', async () => {
+  const replies = [
+    await send(env.api, 'GET', '/health/live'), await send(env.api, 'GET', '/nao-existe'), await send(env.api, 'GET', '/wallets/x'),
+    await postJson(env.api, '/wallets', '{'), await send(env.api, 'OPTIONS', '/wallets'),
+  ];
+  expect(replies.flatMap((r) => [r.headers.get('x-powered-by'), r.headers.get('server')]).filter((value) => value !== null)).toEqual([]);
+  return `${tally(replies.map((r) => r.status))}; sem X-Powered-By e sem Server`;
+});
+
 securityCase('Sem cabeçalho CORS: página de outra origem não lê respostas', 'nenhum Access-Control-Allow-Origin', async () => {
   const replies = [
     await send(env.api, 'GET', '/health/live', undefined, { origin: 'https://atacante.example' }),
