@@ -433,3 +433,44 @@ wager_processing_duration_seconds_count 3
 wager_reconciliation_divergence_total 0
 wager_outbox_lag_seconds 0
 ```
+
+## Autenticação
+
+`/health/live`, `/health/ready` e `/metrics` são rotas abertas. As demais passam por um guard global que **hoje é no-op**: nada é autenticado nem autorizado, e quem alcança a porta HTTP (ou publica na fila de entrada) opera como qualquer provedor. O serviço não deve ser exposto fora de uma rede confiável. A decisão, o desenho que seria adotado e o ponto de extensão no código estão em [Autenticação](docs/ARCHITECTURE.md#autenticação), no documento de arquitetura.
+
+## Mapa de garantias
+
+Cada garantia e a seção de [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) que a explica.
+
+| Garantia | Seção |
+| --- | --- |
+| Visão de todas as garantias, com o mecanismo e o teste que prova cada uma | [Garantias e como são provadas](docs/ARCHITECTURE.md#garantias-e-como-são-provadas) |
+| Dinheiro nunca passa por ponto flutuante | [Mapeamento do Money](docs/ARCHITECTURE.md#mapeamento-do-money) |
+| Saldo correto sob concorrência: lock por wallet e ordem global de locks | [Estratégia transacional e de locks](docs/ARCHITECTURE.md#estratégia-transacional-e-de-locks) |
+| Idempotência no banco: replay e conflito separados pelo `payloadHash` | [Idempotência e payloadHash](docs/ARCHITECTURE.md#idempotência-e-payloadhash) |
+| Estados terminais não mudam | [Máquina de estados de WagerTransaction](docs/ARCHITECTURE.md#máquina-de-estados-de-wagertransaction) |
+| Rejeições auditáveis, com código estável | [Códigos de falha](docs/ARCHITECTURE.md#códigos-de-falha) |
+| Referência que chega depois, com limite de espera | [Limite do PENDING_REFERENCE](docs/ARCHITECTURE.md#limite-do-pending_reference) |
+| Mensagem repetida não reprocessa | [Inbox e idempotência são camadas diferentes](docs/ARCHITECTURE.md#inbox-e-idempotência-são-camadas-diferentes) |
+| Falha transitória volta à fila; permanente vai à DLQ | [Classificação de erros](docs/ARCHITECTURE.md#classificação-de-erros) |
+| Entrega dos eventos: at-least-once, sem ordem | [O que é e o que não é garantido ao consumidor dos eventos](docs/ARCHITECTURE.md#o-que-é-e-o-que-não-é-garantido-ao-consumidor-dos-eventos) |
+| Divergência entre saldo e ledger é reportada, nunca corrigida | [Reconciliação](docs/ARCHITECTURE.md#reconciliação-post-walletswalletidreconciliation) |
+
+## Testes e evidências
+
+Os testes de integração, concorrência, segurança e carga usam PostgreSQL e MiniStack reais, sem mock de nenhum dos dois.
+
+| Suíte | O que prova | Números |
+| --- | --- | --- |
+| Unidade (`bun run check`) | `Money`, invariantes da `Wallet`, regras de cada tipo de transação, `payloadHash`, classificação de erros; uma regra de lint proíbe `number` para dinheiro | 473 testes, 0 falhas |
+| Integração (`bun run test:integration`) | Migrations, constraints e triggers, atomicidade entre wallet, ledger, inbox e outbox, inbox, retry, DLQ e recuperação | 443 testes, 0 falhas |
+| Concorrência (`bun run test:concurrency`) | A mesma `BET` 50 vezes em paralelo gera 1 débito; 30 apostas de 10,00 sobre saldo 100,00 processam exatamente 10; 3 processos simultâneos; processo morto entre o commit e o ack | 32 testes, 0 falhas |
+| Invariantes aleatórias (dentro da suíte de concorrência) | Sequências geradas por semente (`101`, `202` e `303`, 150 operações em cada execução, sequencial e concorrente), comparadas com um modelo de referência e com consultas sobre o banco inteiro. Na falha, o teste imprime a semente e reduz a sequência | Ver [Invariantes sob operações aleatórias](docs/ARCHITECTURE.md#invariantes-sob-operações-aleatórias) |
+| Segurança (`bun run test:security`) | Injeção, abuso de valores e de protocolo, idempotência entre provedores, gasto duplo, vazamento, mensagens venenosas, disponibilidade e segredos. Não é um pentest | 92 casos: 78 passaram, 14 confirmam limitações, 0 falharam |
+| Carga (`bun run test:load`) | Latência, vazão e atraso do outbox em uma máquina, com invariantes conferidas ao fim de cada cenário. Não mede capacidade de produção | 535,38 req/s com 100 wallets contra 123,59 req/s em uma única wallet (p50 de 58,59 contra 256,88 ms); invariantes passaram em todos os cenários |
+
+Detalhes:
+
+- [Cobertura dos testes obrigatórios](docs/ARCHITECTURE.md#cobertura-dos-testes-obrigatórios): cada item e o arquivo e teste que o prova.
+- [docs/LOAD_TEST.md](docs/LOAD_TEST.md): metodologia, resultados, análise e limitações da carga.
+- [docs/SECURITY_TESTS.md](docs/SECURITY_TESTS.md): casos, achados e o que não foi coberto.
