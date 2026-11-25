@@ -12,7 +12,9 @@ Decisões, alternativas, trade-offs e limitações do serviço. A primeira parte
 - [Decisões transversais](#decisões-transversais): [ORM](#orm-mikroorm), [Money](#mapeamento-do-money), [transações e locks](#estratégia-transacional-e-de-locks)
 - [Autenticação](#autenticação)
 - [Limitações conhecidas](#limitações-conhecidas)
-- [Detalhes](#detalhes): registro de decisões por fase:
+- [Detalhes](#detalhes)
+- [Regras e contratos](#regras-e-contratos): [estados](#máquina-de-estados-de-wagertransaction)
+- [Registro de decisões por fase](#registro-de-decisões-por-fase):
   [0, base técnica](#fase-0--base-técnica-e-spike-de-compatibilidade) ·
   [1, domínio e wallet](#fase-1--domínio-e-wallet) ·
   [2, HTTP, idempotência e lock](#fase-2--betwinloss-por-http-idempotência-e-lock) ·
@@ -180,6 +182,28 @@ Resumo; o detalhe e a justificativa da maioria estão na seção de cada fase.
 
 ## Detalhes
 
+### Regras e contratos
+
+Referência única de estados, códigos, idempotência e interpretações. O raciocínio de cada decisão está no registro por fase, adiante.
+
+#### Máquina de estados de WagerTransaction
+
+Estados terminais: **`PROCESSED`, `REJECTED` e `FAILED`**. A transação nasce `PENDING` (`WagerTransaction.create`).
+
+| De \ Para | `PENDING` | `PENDING_REFERENCE` | `PROCESSED` | `REJECTED` | `FAILED` |
+| --- | --- | --- | --- | --- | --- |
+| `PENDING` | proibida (não há método) | válida (`markPendingReference`) | válida (`markProcessed`) | válida (`reject`) | válida (`fail`) |
+| `PENDING_REFERENCE` | **proibida** (domínio e trigger) | válida (reagenda, `attempts + 1`) | válida | válida | válida |
+| `PROCESSED` (terminal) | proibida | proibida | proibida | proibida | proibida |
+| `REJECTED` (terminal) | proibida | proibida | proibida | proibida | proibida |
+| `FAILED` (terminal) | proibida | proibida | proibida | proibida | proibida |
+
+- **Condições:** `markProcessed` de `REFUND` ou `ROLLBACK` exige `referenceTransactionId`; `reject` aceita qualquer código menos `INTERNAL_PERMANENT_ERROR`; `fail` aceita só esse.
+- **Domínio:** transicionar um terminal lança `InvalidTransactionStateError` (erro de programação).
+- **Banco** (trigger `wager_transactions_guard`): recusa qualquer `UPDATE` de linha terminal, `PENDING_REFERENCE` para `PENDING`, mudança de colunas de identidade e `DELETE`. As demais transições ficam a cargo do domínio.
+- **O que é gravado hoje:** `PROCESSED`, `REJECTED` e `PENDING_REFERENCE`. A aplicação não persiste `PENDING`, e nenhum caminho chama `fail`.
+- **Provas:** `test/unit/wager-transaction.test.ts`, `test/integration/schema.test.ts`.
+
 ### Registro de decisões por fase
 
 Cada fase registra o que foi decidido, as alternativas, os trade-offs e as limitações daquele momento; quando uma fase posterior supera um ponto, o texto diz.
@@ -287,7 +311,7 @@ qualquer mutação, então uma falha deixa saldo e `version` intactos. `version`
 `CREDIT` de 0 até o saldo; com saldo 0 não há lançamento.
 A exclusão mútua entre processos continua sendo do banco (lock da wallet, Fase 2); o domínio só garante as invariantes locais.
 
-**3. `WagerTransaction` e a máquina de estados.**
+**3. `WagerTransaction` e a máquina de estados** (tabela completa em "Máquina de estados de WagerTransaction").
 
 ```
 PENDING ──> PROCESSED                                          (terminal)
