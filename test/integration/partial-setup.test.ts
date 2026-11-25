@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterAll, describe, expect, test } from 'bun:test';
 import { CreateQueueCommand, ListQueuesCommand } from '@aws-sdk/client-sqs';
 import pg from 'pg';
-import { createDatabase, withIsolatedStack } from '../../scripts/load/stack';
+import { createDatabase, startInstances, withIsolatedStack } from '../../scripts/load/stack';
 import { createSqsClient } from '../../src/infrastructure/messaging/sqs-client';
 import { createProbe } from '../support/db';
 import { World } from '../support/random-invariants/world';
@@ -138,6 +138,25 @@ describe('ambiente do teste de carga', () => {
     expect(started).toBe(false);
     expect(await queuesWith(`load-${runId}-`)).toEqual([]);
     expect(await databasesLike(`wager_load_${runId}%`)).toEqual([]);
+  }, 60_000);
+
+  test('a instância não sobe e o encerramento também falha: os dois erros chegam, o da inicialização primeiro', async () => {
+    const queue = { name: 'sem-uso', url: 'sem-uso' };
+    // Um diretório como arquivo de log: a gravação do stderr é recusada pelo sistema, e `stop()` falha.
+    const options = { count: 1, databaseUrl: 'invalida', input: queue, deadLetter: queue, events: queue, errorLog: tmpdir() };
+    const previous = process.env['SQS_WAIT_TIME_SECONDS'];
+    process.env['SQS_WAIT_TIME_SECONDS'] = 'invalido';
+    try {
+      const failure = await startInstances(options).then(() => undefined, (error: unknown) => error);
+      expect(String(failure)).toContain('instância encerrou ao subir');
+      expect(failure).toBeInstanceOf(AggregateError);
+      const [startup, cleanup] = (failure as AggregateError).errors;
+      expect(String(startup)).toContain('instância encerrou ao subir');
+      expect(String(cleanup)).toMatch(/EISDIR|EPERM|EACCES/);
+    } finally {
+      if (previous === undefined) delete process.env['SQS_WAIT_TIME_SECONDS'];
+      else process.env['SQS_WAIT_TIME_SECONDS'] = previous;
+    }
   }, 60_000);
 
   test('o cenário falha com instância no ar e fila extra: processo encerrado, filas e banco apagados', async () => {

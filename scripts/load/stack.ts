@@ -116,6 +116,8 @@ export async function startInstances({ count, databaseUrl, input, deadLetter, ev
     const drained = (async () => {
       for await (const chunk of child.stderr) appendFileSync(errorLog, chunk);
     })();
+    // A gravação pode falhar antes de alguém esperar por ela: quem relata a falha é `stop()`, que aguarda esta mesma promessa.
+    drained.catch(() => undefined);
     return { child, url: `http://127.0.0.1:${port}`, drained };
   };
   const stop = async (): Promise<void> => {
@@ -123,8 +125,11 @@ export async function startInstances({ count, databaseUrl, input, deadLetter, ev
     await Promise.all(started.map(async ({ child, drained }) => { await child.exited; await drained; }));
   };
 
-  try {
-    // Uma a uma, dentro do `try`: se a segunda não puder ser criada, a primeira é encerrada.
+  const cleanup = new Cleanup();
+  cleanup.defer(stop);
+  // Se o encerramento também falhar, a falha de inicialização continua sendo a principal.
+  await releaseOnFailure(cleanup, async () => {
+    // Uma a uma, dentro do setup: se a segunda não puder ser criada, a primeira é encerrada.
     for (let i = 0; i < count; i += 1) started.push(spawnInstance());
     await Promise.all(started.map(async ({ child, url }) => {
       const deadline = Date.now() + 60_000;
@@ -136,10 +141,7 @@ export async function startInstances({ count, databaseUrl, input, deadLetter, ev
         await Bun.sleep(100);
       }
     }));
-  } catch (error) {
-    await stop();
-    throw error;
-  }
+  });
   return { urls: started.map(({ url }) => url), stop };
 }
 
