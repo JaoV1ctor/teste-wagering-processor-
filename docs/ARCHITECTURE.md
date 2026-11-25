@@ -5,6 +5,141 @@
 
 ---
 
+## Sumário
+
+- [Visão geral](#visão-geral)
+- [Garantias e como são provadas](#garantias-e-como-são-provadas)
+- [Decisões transversais](#decisões-transversais): [ORM](#orm-mikroorm), [Money](#mapeamento-do-money), [transações e locks](#estratégia-transacional-e-de-locks)
+- [Autenticação](#autenticação)
+- [Limitações conhecidas](#limitações-conhecidas)
+- Detalhe por fase:
+  [0, base técnica](#fase-0--base-técnica-e-spike-de-compatibilidade) ·
+  [1, domínio e wallet](#fase-1--domínio-e-wallet) ·
+  [2, HTTP, idempotência e lock](#fase-2--betwinloss-por-http-idempotência-e-lock) ·
+  [3, reversões e worker](#fase-3--refund-rollback-pending_reference-e-worker) ·
+  [4, SQS e inbox](#fase-4--consumidor-sqs-inbox-dlq-e-shutdown) ·
+  [5, outbox](#fase-5--outbox-transacional-publishers-e-eventos-de-integração) ·
+  [6, operação](#fase-6--reconciliação-health-métricas-e-logs) ·
+  [revisão independente](#revisão-independente-correções-e-limitações-restantes)
+
+## Visão geral
+
+O serviço processa transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) de vários provedores e mantém, por wallet, um saldo materializado e um ledger imutável que sempre conferem.
+Deve continuar correto com mensagens duplicadas, fora de ordem ou simultâneas, com várias instâncias e com quedas antes ou depois do commit.
+
+Componentes (todos no mesmo processo NestJS sob Bun; qualquer número de instâncias):
+
+- **HTTP**: wallets, consulta de ledger, submissão e consulta de transações, reconciliação, health e métricas.
+- **Consumidor SQS** (`wager-transactions.fifo`, com DLQ): a mesma submissão, por fila, com inbox persistente.
+- **Worker de `PENDING_REFERENCE`**: reprocessa o que chegou antes da transação referenciada.
+- **Publisher do outbox**: envia à fila `wager-events` os eventos já commitados.
+
+PostgreSQL é a única fonte de verdade e o árbitro da concorrência; nenhuma garantia depende de memória do processo.
+
+```
+POST /wagering/transactions ─┐
+                             ├─> ProcessWagerTransactionUseCase
+wager-transactions.fifo ─────┘     chave já conhecida? replay ou conflito, sem lock de wallet
+                                   BEGIN
+                                     inbox (só SQS) ─> lock da wallet ─> transação ─> saldo + ledger ─> outbox
+                                   COMMIT ─> só então resposta HTTP ou ack
+                                        │
+              referência ausente ───────┼──> PENDING_REFERENCE ──> worker (mesma regra, mesma ordem de locks)
+                                        └──> outbox_messages ──> publisher (claim por lease) ──> wager-events
+```
+
+Camadas: `interface` e `infrastructure` dependem de `application`, que depende de `domain` (TypeScript puro, sem Nest nem ORM). A composição fica em `src/app.module.ts`.
+
+## Garantias e como são provadas
+
+Os testes de integração e de concorrência usam Postgres e MiniStack reais. A invariante `wallet.balance == saldo reconstruído pelo ledger` é conferida nos cenários que movem saldo.
+
+| Garantia | Mecanismo | Teste que a prova |
+| --- | --- | --- |
+| Dinheiro nunca é `number` | `Money` (`bigint` em centavos), strings decimais nas bordas, `NUMERIC(19,2)`, regra de lint em `src/` | `test/unit/money.test.ts`, `test/unit/money-lint.test.ts` |
+| Corrida não produz saldo negativo | Lock por wallet antes de decidir, regra no domínio e `CHECK (balance >= 0)` | `test/concurrency/wager-transactions.test.ts` (duas apostas de 80,00 em 100,00; 30 de 10,00 em 100,00), `test/integration/schema.test.ts` |
+| Sem débito ou crédito duplicado | `UNIQUE` da chave e do id externo, um lançamento por transação e wallet, no máximo uma reversão efetiva (índice parcial) | `test/concurrency/wager-transactions.test.ts` (mesma `BET` x50), `test/concurrency/reversals.test.ts`, `test/concurrency/sqs-consumer.test.ts` |
+| Idempotência no banco | `INSERT ... ON CONFLICT (idempotency_key)`, `payloadHash` separa replay de conflito; inbox com `PK (consumer_name, message_id)` | `test/integration/process-wager-transaction.test.ts`, `test/integration/process-wager-inbox.test.ts`, `test/concurrency/outbox.test.ts` (replay depois de reiniciar o serviço) |
+| Correto com várias instâncias | Exclusão mútua por lock de linha; publisher e worker dividem trabalho por lease com `SKIP LOCKED`; nada em memória | `test/concurrency/wager-multiprocess.test.ts` (3 processos), `test/concurrency/reversals.test.ts`, `test/concurrency/outbox.test.ts` |
+| Evento só depois do commit, sem perda | Transactional outbox na mesma transação do fato; publisher só enxerga o commitado; entrega at-least-once | `test/integration/outbox-publisher.test.ts`, `test/integration/outbox-atomicity.test.ts`, `test/concurrency/outbox.test.ts` |
+| Ledger imutável e auditável | Triggers contra `UPDATE`, `DELETE` e `TRUNCATE`, cadeia `before`/`after`, saldo conferido no `COMMIT`, reconciliação por API | `test/integration/schema.test.ts`, `test/integration/reconciliation.test.ts` |
+| Testes sem mock de Postgres ou SQS | Containers do `docker-compose.yml`; falhas injetadas embrulhando o adaptador ou o repositório real, ou apontando para um endereço morto | `test/integration/sqs.test.ts`, `test/integration/health.test.ts`, `test/integration/sqs-consumer.test.ts` |
+
+Comandos: `bun run check` (tipos, lint e unidade), `bun run test:integration`, `bun run test:concurrency`.
+
+## Decisões transversais
+
+### ORM: MikroORM
+
+O enunciado aceita MikroORM (preferencial) ou TypeORM. Ficamos com o **MikroORM 7**; o TypeORM era o plano B caso o MikroORM não funcionasse sob Bun. Como funcionou, o TypeORM não foi instalado nem medido, e não afirmamos que lhe falte algum destes recursos.
+
+O que pesou, tudo exercitado no projeto:
+
+- **Lock pessimista explícito** e inspecionável: o SQL que o `LockMode` gera foi capturado em teste.
+- **Transação e SQL cru na mesma unidade de trabalho**: dentro de `em.transactional`, `em.execute` usa a mesma transação; entidades, `ON CONFLICT`, `SKIP LOCKED` e o lock da wallet convivem nela.
+- **Migrations por lista** (`migrationsList`): a classe é registrada explicitamente, sem glob nem etapa de build, e executa o SQL de `db/` como está.
+
+O que o ORM **não** faz, e o que isso custa:
+
+- Não gera `FOR NO KEY UPDATE`: o lock da wallet é SQL escrito à mão, seguido de uma releitura pelo ORM (uma consulta a mais).
+- `em.execute` com `?` não é prepared statement do servidor: o MikroORM escapa e interpola os valores no cliente (testado com entrada maliciosa; os valores nunca são concatenados por nós).
+- O `INSERT ... ON CONFLICT` do inbox e da transação, os claims com `SKIP LOCKED` e a reconciliação são SQL cru.
+- Unit of Work e Identity Map quase não são aproveitados: há um fork do `EntityManager` por chamada e `flush` a cada `add`, para os `INSERT` saírem na ordem de locks.
+- O schema não é derivado das entidades (`snapshot: false`): constraints e triggers vivem em SQL, e divergência entre entidade e tabela só aparece em execução, nos testes.
+- `MikroORM.init` exige ao menos uma entidade, salvo `warnWhenNoEntities: false` (necessário para só migrar).
+
+Detalhes: [Fase 0](#fase-0--base-técnica-e-spike-de-compatibilidade) e [Fase 2](#fase-2--betwinloss-por-http-idempotência-e-lock).
+
+### Mapeamento do Money
+
+- **Domínio** (`src/domain/money.ts`): classe imutável, não negativa, `bigint` em centavos mais moeda de três letras; operar moedas diferentes lança erro.
+- **Bordas** (HTTP, SQS, eventos): `{ "amount": "25.00", "currency": "BRL" }`; `number` JSON é rejeitado, assim como mais de 2 casas.
+- **Banco**: `NUMERIC(19,2)` e `char(3)`; a entidade declara o valor como `string` e o mapper converte com `Money.fromString`. Nenhum passo intermediário é ponto flutuante.
+- O Postgres arredonda `10.005` em silêncio; por isso a rejeição acontece em `Money`, antes do banco.
+
+Alternativas e testes: [Fase 1](#fase-1--domínio-e-wallet).
+
+### Estratégia transacional e de locks
+
+- Uma transação SQL por processamento (`READ COMMITTED`, o padrão do Postgres): inbox, transação, saldo, ledger e outbox são atômicos.
+- **Lock pessimista por wallet** (`FOR NO KEY UPDATE`), na primeira instrução que toca a wallet. Não há lock global.
+- **Ordem global: wallet → transação → ledger → outbox.** O inbox vem antes e não toca a wallet. Inserir a transação antes de travar a wallet causa deadlock (medido com `FOR UPDATE`).
+- `lock_timeout` de 3 s; deadlock, serialização, timeout de lock e falha de conexão têm 3 tentativas com jitter; esgotadas, `503` no HTTP e mensagem sem ack no SQS.
+- Publisher e worker reivindicam por **lease** (`SKIP LOCKED`) numa transação curta e processam fora dela; o worker então trava a wallet primeiro.
+- O banco é a última defesa: `CHECK`, `UNIQUE`, índice parcial e triggers valem mesmo que a aplicação erre.
+
+Detalhes: [Fase 2](#fase-2--betwinloss-por-http-idempotência-e-lock), [Fase 3](#fase-3--refund-rollback-pending_reference-e-worker) e [Fase 5](#fase-5--outbox-transacional-publishers-e-eventos-de-integração).
+
+## Autenticação
+
+**Decisão: não implementar autenticação.** O enunciado a deixa a critério do candidato, não a pontua, e aceita a omissão se documentada com um ponto de extensão no código. O tempo foi para correção financeira, concorrência e idempotência.
+**Consequência hoje:** quem alcança a porta HTTP opera como qualquer provedor. O serviço não deve ser exposto fora de uma rede confiável.
+
+Desenho que adotaríamos:
+
+1. **Identity Provider externo** com OIDC (por exemplo, Keycloak), fluxo *client credentials*, um client por provedor. Nenhuma tabela própria de usuários ou senhas.
+2. Um guard valida o token: assinatura pelas chaves do JWKS, `iss`, `aud` e `exp`. Token ausente ou inválido: `401`.
+3. O provedor é identificado por uma **claim do token** (por exemplo, `provider_id`, configurada no client) e comparada com o `providerId` do corpo. Divergência: `403`, sem gravar nada.
+4. A mesma comparação vale para a consulta por `/providers/:providerId/...`. Wallets, reconciliação e consulta por id interno exigem um papel de operador ou a checagem do dono da transação.
+5. `/health/*` e `/metrics` ficam abertos, restritos por rede.
+6. A **fila é canal interno confiável**: quem pode produzir é controlado pela política da fila (IAM), não por token na mensagem. A identidade contida na mensagem continua passando pelas mesmas validações do HTTP (formato, referência resolvida dentro do provedor, player e moeda da wallet).
+
+Como o `providerId` entra no `payloadHash`, um replay só devolve o resultado a quem envia o mesmo `providerId`. A `idempotencyKey`, porém, é única no serviço inteiro: um provedor que use a chave de outro recebe `409`.
+
+## Limitações conhecidas
+
+Resumo; o detalhe e a justificativa da maioria estão na seção de cada fase.
+
+- **Segurança:** sem autenticação; `/metrics` e health abertos; a aplicação conecta como dona das tabelas, e quem tem esse papel pode desligar triggers (não há papel restrito de banco).
+- **Escala:** escritas na mesma wallet são serializadas; throughput sob carga não foi medido (sem teste de carga). Prazos, lotes e backoffs são estimativas. Ver [Fase 2](#fase-2--betwinloss-por-http-idempotência-e-lock).
+- **Reversões:** sem reversão parcial; referência que não chega em cerca de 3 a 4,5 minutos vira `REJECTED`. Ver [Fase 3](#fase-3--refund-rollback-pending_reference-e-worker).
+- **Fila:** a ordem por wallet não sobrevive à DLQ, não cobre HTTP nem pendências, e não há heartbeat de visibilidade. Comportamentos verificados no MiniStack, não na AWS. Ver [Fase 4](#fase-4--consumidor-sqs-inbox-dlq-e-shutdown).
+- **Eventos:** at-least-once e sem ordem de entrega (o consumidor deduplica por `eventId` e ordena o saldo por `walletVersion`); outbox sem DLQ; inbox e outbox sem retenção. Ver [Fase 5](#fase-5--outbox-transacional-publishers-e-eventos-de-integração).
+- **Operação:** reconciliação sob demanda, com custo proporcional ao ledger da wallet; métricas por instância; sem dashboard, alertas nem tracing; saídas do runtime e de bibliotecas podem escapar do log JSON. Ver [Fase 6](#fase-6--reconciliação-health-métricas-e-logs).
+- **Escopo:** o fluxo é exercitado em BRL (o modelo é multi-moeda e o conflito é testado); sem partidas dobradas; o `docker-compose.yml` sobe só Postgres e MiniStack, e a aplicação roda com `bun run start`.
+
+---
+
 ## Fase 0 — Base técnica e spike de compatibilidade
 
 **Objetivo.** Provar que a base funciona antes de escrever regra de negócio: Bun + NestJS + MikroORM,
