@@ -63,7 +63,7 @@ Os testes de integração e de concorrência usam Postgres e MiniStack reais. A 
 | Corrida não produz saldo negativo | Lock por wallet antes de decidir, regra no domínio e `CHECK (balance >= 0)` | `test/concurrency/wager-transactions.test.ts` (duas apostas de 80,00 em 100,00; 30 de 10,00 em 100,00), `test/integration/schema.test.ts` |
 | Sem débito ou crédito duplicado | `UNIQUE` por provedor da chave e do id externo, um lançamento por transação e wallet, no máximo uma reversão efetiva (índice parcial) | `test/concurrency/wager-transactions.test.ts` (mesma `BET` x50), `test/concurrency/reversals.test.ts`, `test/concurrency/sqs-consumer.test.ts` |
 | Idempotência no banco | `INSERT ... ON CONFLICT (provider_id, idempotency_key)`, `payloadHash` separa replay de conflito; inbox com `PK (consumer_name, message_id)` | `test/integration/process-wager-transaction.test.ts`, `test/integration/process-wager-inbox.test.ts`, `test/concurrency/outbox.test.ts` (replay depois de reiniciar o serviço) |
-| Correto com várias instâncias | Exclusão mútua por lock de linha; publisher e worker dividem trabalho por lease com `SKIP LOCKED`; nada em memória | `test/concurrency/wager-multiprocess.test.ts` (3 processos), `test/concurrency/reversals.test.ts`, `test/concurrency/outbox.test.ts` |
+| Correto com várias instâncias | Exclusão mútua por lock de linha; publisher e worker dividem trabalho por lease com `SKIP LOCKED`; nada em memória | `test/concurrency/wager-multiprocess.test.ts` (3 processos), `test/concurrency/reversals.test.ts`, `test/concurrency/outbox.test.ts`, `test/concurrency/random-invariants.test.ts` (sequências geradas) |
 | Evento só depois do commit, sem perda | Transactional outbox na mesma transação do fato; publisher só enxerga o commitado; entrega at-least-once | `test/integration/outbox-publisher.test.ts`, `test/integration/outbox-atomicity.test.ts`, `test/concurrency/outbox.test.ts` |
 | Ledger imutável e auditável | Triggers contra `UPDATE`, `DELETE` e `TRUNCATE`, cadeia `before`/`after`, saldo conferido no `COMMIT`, reconciliação por API | `test/integration/schema.test.ts`, `test/integration/reconciliation.test.ts` |
 | Testes sem mock de Postgres ou SQS | Containers do `docker-compose.yml`; falhas injetadas embrulhando o adaptador ou o repositório real, ou apontando para um endereço morto | `test/integration/sqs.test.ts`, `test/integration/health.test.ts`, `test/integration/sqs-consumer.test.ts` |
@@ -72,9 +72,9 @@ Os testes de integração e de concorrência usam Postgres e MiniStack reais. A 
 
 | Comando | Cobre | Resultado |
 | --- | --- | --- |
-| `bun run check` | tipos, lint e testes de unidade | 467 testes em 33 arquivos, 0 falhas |
-| `bun run test:integration` | Postgres e MiniStack reais | 441 testes em 41 arquivos, 0 falhas |
-| `bun run test:concurrency` | paralelismo e processos reais | 26 testes em 8 arquivos, 0 falhas |
+| `bun run check` | tipos, lint e testes de unidade | 473 testes em 34 arquivos, 0 falhas |
+| `bun run test:integration` | Postgres e MiniStack reais | 443 testes em 41 arquivos, 0 falhas |
+| `bun run test:concurrency` | paralelismo e processos reais | 32 testes em 9 arquivos, 0 falhas |
 
 ## Decisões transversais
 
@@ -248,6 +248,39 @@ Cada item da lista de testes obrigatórios do enunciado e onde ele é provado. N
 
 `wallet.balance == saldo reconstruído pelo ledger`: conferida wallet a wallet nos testes de concorrência e nos de integração que verificam saldo (`ledgerBalance` em `test/support/db.ts` e `expectEventsConsistentWithLedger` em `test/support/events.ts`).
 Os arquivos de integração que moviam saldo sem essa conferência exigem, ao encerrar, que nenhuma wallet do banco de testes esteja divergente (`divergentWallets`, em `test/support/db.ts`).
+
+#### Invariantes sob operações aleatórias
+
+`test/concurrency/random-invariants.test.ts` ataca a garantia central com sequências que ninguém escreveu à mão, contra Postgres e MiniStack reais. Um gerador próprio (`mulberry32`, sem biblioteca) produz, a partir de uma semente: wallets de vários jogadores em BRL e USD, `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK` de três provedores (com valores que estouram o saldo e o limite do tipo), replays, a mesma chave com outro payload ou em outro provedor, o mesmo id externo com outra chave, reversões antes da referência, reversões repetidas, entradas inválidas, reentregas na fila e passadas do worker. Cerca de um quarto dos envios usa a fila.
+
+Cada semente roda duas fases, cada uma em um banco descartável com filas próprias:
+
+| Fase | Como executa | O que exige |
+| --- | --- | --- |
+| Sequencial | Uma operação por vez, em uma instância | Status, corpo e destino da mensagem iguais aos de um modelo de referência em memória (`bigint`, sem importar o domínio); depois de cada operação, saldo, quantidade de lançamentos e de transações iguais aos do modelo |
+| Concorrente | Lotes de operações simultâneas em duas instâncias, com dois consumidores e o worker em paralelo | Respostas dentro do contrato (nunca `500`; `503` é aceito), a mesma transação para a mesma chave e a mesma resposta definitiva para a mesma transação |
+
+Ao fim de cada fase, depois de o worker esgotar as pendências, consultas SQL sobre o banco inteiro exigem: saldo igual à soma do ledger; nenhum saldo negativo; no máximo uma reversão efetiva por transação; chave e id externo únicos por provedor; um lançamento por transação `PROCESSED` que move saldo (com wallet, valor e direção dela) e nenhum nas demais; e eventos do outbox correspondentes ao estado de cada transação e a cada lançamento.
+
+**Como reproduzir.** Sementes padrão: `101`, `202` e `303`, com 150 operações geradas por fase (a concorrente repete parte delas nos lotes). A execução padrão levou cerca de 25 s na máquina de desenvolvimento.
+
+```bash
+bun test test/concurrency/random-invariants.test.ts
+INVARIANT_SEED=202 INVARIANT_OPS=150 bun test test/concurrency/random-invariants.test.ts   # uma semente (ou várias, separadas por vírgula)
+```
+
+Na falha, o teste imprime a semente, o comando e a menor sequência que encontrou para repetir o mesmo tipo de falha (delta debugging, reexecutando do zero). Na fase sequencial a mesma semente dá as mesmas operações, as mesmas respostas e o mesmo `digest` impresso. Na concorrente, a semente fixa as operações e os lotes, não a ordem em que o banco os atende: uma falha pode não aparecer de primeira, e a redução (3 execuções por candidata, até 60 candidatas) pode parar antes do mínimo. O gerador, o modelo e a redução têm testes de unidade em `test/unit/random-invariants-support.test.ts`, inclusive o que exige que as sementes padrão passem por todos os códigos de rejeição.
+
+**Controle negativo** (em cópia descartável do repositório):
+
+| Proteção retirada | Resultado |
+| --- | --- |
+| Índice `wt_one_effective_reversal_uq` e a conferência de reversão já feita na aplicação (juntos, porque um cobre o outro) | Sequencial, semente `101`: segunda reversão `PROCESSED`; reduzida a 4 operações, idêntica em duas execuções. Concorrente, nas três sementes: invariante "mais de uma reversão efetiva", reduzida a 4 operações |
+| `FOR NO KEY UPDATE` da wallet | Concorrente, semente `101`: mensagem na DLQ com `UNEXPECTED_ERROR` (a cadeia do ledger no schema recusa a escrita perdida); reduzida a 15 operações |
+
+**Defeito encontrado por este teste (corrigido).** Semente `202`, reduzida a 3 operações: wallet em BRL, `BET` em USD, replay. O replay (e as consultas) de uma transação rejeitada por moeda devolvia o saldo da wallet rotulado com a moeda do pedido. Nenhum saldo gravado era afetado. Teste fixo: `test/integration/wagering-http.test.ts`.
+
+**O que não prova.** São amostras: três sementes não cobrem todas as sequências nem todas as intercalações. As duas instâncias estão no mesmo processo (pools separados); processos distintos, morte de processo, reinício, queda do Postgres ou do SQS e erros transitórios injetados ficam com os outros testes. O publisher do outbox não roda aqui: os eventos são conferidos na tabela, não na fila de eventos. Consulta de wallet, paginação do ledger, reconciliação, health e métricas não são exercitadas. O modelo de referência é a nossa leitura das regras: um engano de interpretação presente nele e na aplicação passa. MiniStack não é o SQS da AWS.
 
 #### Como ler estas provas
 
