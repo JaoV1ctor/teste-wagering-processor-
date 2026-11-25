@@ -4,10 +4,11 @@ import { expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
-import { DeleteQueueCommand, type SQSClient } from '@aws-sdk/client-sqs';
+import type { SQSClient } from '@aws-sdk/client-sqs';
 import { Migrator } from '@mikro-orm/migrations';
 import { MikroORM } from '@mikro-orm/postgresql';
 import pg from 'pg';
+import { Cleanup, deleteQueuesWithPrefix, releaseOnFailure } from '../../scripts/cleanup';
 import { requireEnv } from '../../src/infrastructure/env';
 import { createSqsClient } from '../../src/infrastructure/messaging/sqs-client';
 import { createOrmConfig } from '../../src/infrastructure/persistence/orm.config';
@@ -38,45 +39,57 @@ async function admin(sql: string): Promise<void> {
   }
 }
 
-/** Banco criado e apagado por este arquivo de teste, filas com prefixo único e a aplicação real apontada para eles. */
-export async function startIsolated(env: Record<string, string> = {}): Promise<Isolated> {
-  const name = `wager_sec_${uuid().replaceAll('-', '').slice(0, 16)}`;
-  await admin(`create database ${name}`);
-  const url = new URL(requireEnv('DATABASE_URL'));
-  url.pathname = `/${name}`;
-  const databaseUrl = url.toString();
-  const orm = await MikroORM.init({ ...createOrmConfig(), clientUrl: databaseUrl, discovery: { warnWhenNoEntities: false }, extensions: [Migrator] });
-  try {
-    await orm.migrator.up();
-  } finally {
-    await orm.close();
-  }
+export interface IsolatedOptions {
+  /** Sufixo do nome do banco e das filas; o teste de limpeza o fixa para conferir o que sobrou. */
+  id?: string;
+  /** Último passo do setup, já com tudo no ar: se falhar, tudo é liberado. */
+  afterStart?(env: Isolated): Promise<void>;
+}
 
-  const sqs = createSqsClient();
-  const queues = await newQueues(sqs);
-  const appEnv = {
-    DATABASE_URL: databaseUrl, SQS_WAGER_QUEUE_NAME: queues.names.queueName, SQS_WAGER_DLQ_NAME: queues.names.deadLetterQueueName,
-    SQS_EVENTS_QUEUE_NAME: queues.eventsQueueName, SQS_WAIT_TIME_SECONDS: '1', AWS_SECRET_ACCESS_KEY: SECRET_CANARY,
-  };
-  const apps: Api[] = [];
-  const startAnother = async (extra: Record<string, string> = {}): Promise<Api> => {
-    const app = await startApi({ ...appEnv, ...extra });
-    apps.push(app);
-    return app;
-  };
-  const api = await startAnother(env);
-  const probe = new pg.Pool({ connectionString: databaseUrl, max: 4 });
+/**
+ * Banco criado e apagado por este arquivo de teste, filas com prefixo único e a aplicação real apontada para eles. Se um passo falhar, o
+ * que os anteriores criaram é liberado antes de o erro subir.
+ */
+export async function startIsolated(env: Record<string, string> = {}, options: IsolatedOptions = {}): Promise<Isolated> {
+  const id = options.id ?? uuid().replaceAll('-', '').slice(0, 16);
+  const cleanup = new Cleanup();
+  return releaseOnFailure(cleanup, async () => {
+    const name = `wager_sec_${id}`;
+    await admin(`create database ${name}`);
+    cleanup.defer(() => admin(`drop database ${name} with (force)`));
+    const url = new URL(requireEnv('DATABASE_URL'));
+    url.pathname = `/${name}`;
+    const databaseUrl = url.toString();
+    const orm = await MikroORM.init({ ...createOrmConfig(), clientUrl: databaseUrl, discovery: { warnWhenNoEntities: false }, extensions: [Migrator] });
+    try {
+      await orm.migrator.up();
+    } finally {
+      await orm.close();
+    }
 
-  return {
-    api, databaseUrl, probe, sqs, queues, startAnother,
-    async close() {
-      await Promise.all(apps.map((app) => app.close()));
-      await probe.end();
-      for (const queueUrl of [queues.mainUrl, queues.dlqUrl, queues.eventsUrl]) await sqs.send(new DeleteQueueCommand({ QueueUrl: queueUrl }));
-      sqs.destroy();
-      await admin(`drop database ${name} with (force)`);
-    },
-  };
+    const sqs = createSqsClient();
+    cleanup.defer(() => sqs.destroy());
+    const prefix = `sec-${id}-`;
+    const queues = await newQueues(sqs, prefix);
+    cleanup.defer(() => deleteQueuesWithPrefix(sqs, prefix));
+    const probe = new pg.Pool({ connectionString: databaseUrl, max: 4 });
+    cleanup.defer(() => probe.end());
+
+    const appEnv = {
+      DATABASE_URL: databaseUrl, SQS_WAGER_QUEUE_NAME: queues.names.queueName, SQS_WAGER_DLQ_NAME: queues.names.deadLetterQueueName,
+      SQS_EVENTS_QUEUE_NAME: queues.eventsQueueName, SQS_WAIT_TIME_SECONDS: '1', AWS_SECRET_ACCESS_KEY: SECRET_CANARY,
+    };
+    const startAnother = async (extra: Record<string, string> = {}): Promise<Api> => {
+      const app = await startApi({ ...appEnv, ...extra });
+      cleanup.defer(() => app.close());
+      return app;
+    };
+    const api = await startAnother(env);
+
+    const isolated: Isolated = { api, databaseUrl, probe, sqs, queues, startAnother, close: () => cleanup.run() };
+    await options.afterStart?.(isolated);
+    return isolated;
+  });
 }
 
 /** Retrato do que importa no banco: qualquer escrita ou mudança de saldo o altera. */

@@ -8,7 +8,7 @@ import { type Check, checkInvariants, type InvariantReport } from './invariants'
 import { count, type Counters, difference, drainOutbox, type OutboxStats, outboxStats, readCounters, waitUntil } from './measure';
 import { INDEPENDENT, MIXED, type Mix, pickKind, type PlannedKind, randomFrom, scheduleReplays } from './plan';
 import { runPool } from './pool';
-import { createDatabase, createLoadQueues, deleteQueues, type Instances, type LoadDatabase, type LoadQueues, startInstances } from './stack';
+import { type IsolatedStack, withIsolatedStack } from './stack';
 import { type Distribution, distribution } from './stats';
 
 export interface Repetition {
@@ -48,31 +48,9 @@ export interface Context {
 const INITIAL_BALANCE = '1000000.00';
 const AMOUNT: Record<PlannedKind, string> = { BET: '10.00', WIN: '15.00', LOSS: '10.00', REFUND: '10.00' };
 
-interface Isolated {
-  database: LoadDatabase;
-  queues: LoadQueues;
-  /** Filas extras criadas durante o cenário, para apagar no fim. */
-  extra: LoadQueues[];
-  start(input?: LoadQueues, count?: number): Promise<Instances>;
-}
-
-async function isolated<T>({ client, runId, config, errorLog }: Context, id: ScenarioId, work: (stack: Isolated) => Promise<T>): Promise<T> {
-  const database = await createDatabase(`${runId}_${id}`);
-  const extra: LoadQueues[] = [];
-  let queues: LoadQueues | undefined;
-  try {
-    queues = await createLoadQueues(client, `load-${runId}-${id}-`);
-    const main = queues;
-    return await work({
-      database, queues: main, extra,
-      start: (input = main, instances = config.instances) =>
-        startInstances({ count: instances, databaseUrl: database.url, input: input.input, deadLetter: input.deadLetter, events: main.events, errorLog }),
-    });
-  } finally {
-    await deleteQueues(client, [...(queues ? [queues] : []), ...extra]);
-    await database.drop();
-  }
-}
+/** Ambiente descartável do cenário, com a quantidade de instâncias configurada. */
+const isolated = <T>({ client, runId, config, errorLog }: Context, id: ScenarioId, work: (stack: IsolatedStack) => Promise<T>): Promise<T> =>
+  withIsolatedStack({ client, runId, errorLog, instances: config.instances }, id, work);
 
 const tally = (values: readonly string[]): Record<string, number> =>
   values.reduce<Record<string, number>>((totals, value) => ({ ...totals, [value]: (totals[value] ?? 0) + 1 }), {});
@@ -259,8 +237,7 @@ async function queueScenario(context: Context, title: string): Promise<ScenarioR
     }
 
     const run = async (total: number, label: string): Promise<Repetition> => {
-      const queues = await createLoadQueues(client, `load-${context.runId}-C-${label}-`);
-      stack.extra.push({ ...queues });
+      const queues = await stack.createQueues(label);
       const payloads = Array.from({ length: total }, (_, index) =>
         wagerPayload(wallets[Math.floor(random() * wallets.length)]!, pickKind(INDEPENDENT, random), `${context.runId}-C-${label}-${index}`));
       const enqueueStarted = Bun.nanoseconds();
