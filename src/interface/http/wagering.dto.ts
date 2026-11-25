@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { ProcessWagerResult } from '../../application/process-wager-transaction.use-case';
 import type { MoneyProps } from '../../domain/money';
 import { type WagerTransaction, WagerTransactionKind, WagerTransactionStatus } from '../../domain/wager-transaction';
-import { moneySchema } from './wallets.dto';
+import { moneySchema, uuidSchema } from './wallets.dto';
 
 const identifier = z.string().min(1).max(255);
 
@@ -12,8 +12,8 @@ const SUBMITTABLE_KINDS = [K.Bet, K.Win, K.Loss, K.Refund, K.Rollback] as const;
 export const wagerFields = {
   providerId: identifier,
   externalTransactionId: identifier,
-  playerId: z.uuid(),
-  walletId: z.uuid(),
+  playerId: uuidSchema,
+  walletId: uuidSchema,
   roundId: identifier,
   gameId: identifier,
   /** OPENING é interno e não entra. */
@@ -39,7 +39,7 @@ export const SubmitTransactionBody = z.strictObject(wagerFields).check(checkRefe
 export const IdempotencyKeyHeader = z.string().trim().min(1).max(255);
 /** Opcional: quem chama pode rastrear a requisição. Limite igual ao do `messageId` do SQS, que cumpre o mesmo papel. */
 export const CorrelationIdHeader = z.string().trim().min(1).max(128).optional();
-export const TransactionIdParam = z.uuid();
+export const TransactionIdParam = uuidSchema;
 export const ProviderTransactionParams = z.strictObject({ providerId: identifier, externalTransactionId: identifier });
 
 /** 201 processada, 422 rejeição de negócio, 202 aguardando referência. FAILED é terminal e não se reenvia: 422. */

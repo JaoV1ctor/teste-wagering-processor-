@@ -26,8 +26,14 @@ export const moneySchema = z
     }
   });
 
-export const CreateWalletBody = z.strictObject({ playerId: z.uuid(), initialBalance: moneySchema });
-export const WalletIdParam = z.uuid();
+/**
+ * Todo UUID que entra (HTTP ou SQS) passa por aqui. UUID não distingue caixa, mas as comparações e o `payloadHash` distinguem:
+ * a borda entrega sempre minúsculas, a forma que o Postgres devolve. Ids que não são UUID ficam como chegaram.
+ */
+export const uuidSchema = z.uuid().toLowerCase();
+
+export const CreateWalletBody = z.strictObject({ playerId: uuidSchema, initialBalance: moneySchema });
+export const WalletIdParam = uuidSchema;
 export const LedgerQuery = z.strictObject({
   cursor: z.string().min(1).optional(),
   limit: z.string().regex(/^[1-9]\d{0,8}$/, 'limit deve ser inteiro positivo').transform((value) => parseInt(value, 10)).optional(),
