@@ -96,7 +96,7 @@ securityCase('Campos faltando ou com tipo errado', 'DLQ MALFORMED_MESSAGE; consu
     ['messageId de 129', withEnvelope({ messageId: 'm'.repeat(129) })], ['providerId de 256', withData({ providerId: 'p'.repeat(256) })],
   ].map(([label, body]) => [label!, body!, 'MALFORMED_MESSAGE'] as const)));
 
-securityCase('Byte nulo e surrogate solto em campos de texto da mensagem', 'DLQ MALFORMED_MESSAGE já no primeiro recebimento; nada gravado', () =>
+securityCase('Byte nulo e surrogate solto em campos de texto da mensagem', 'DLQ MALFORMED_MESSAGE, enviada pelo próprio consumidor (com FailureReason); nada gravado', () =>
   poison([
     ['messageId nulo', withEnvelope({ messageId: `m\u0000-${uuid()}` })], ['providerId nulo', withData({ providerId: 'p\u0000' })],
     ['roundId nulo', withData({ roundId: 'r\u0000' })], ['chave nula', withData({ idempotencyKey: `k\u0000-${uuid()}` })],
