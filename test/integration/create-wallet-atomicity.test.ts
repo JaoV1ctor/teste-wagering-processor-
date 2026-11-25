@@ -8,7 +8,7 @@ import type { LedgerRepository, OutboxRepository, UnitOfWork } from '../../src/a
 import { Money } from '../../src/domain/money';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { createOrmConfig } from '../../src/infrastructure/persistence/orm.config';
-import { createProbe, ensureSchema } from '../support/db';
+import { createProbe, divergentWallets, ensureSchema } from '../support/db';
 
 const probe = createProbe(2);
 let orm: MikroORM;
@@ -20,8 +20,10 @@ beforeAll(async () => {
   real = new MikroOrmUnitOfWork(orm);
 });
 afterAll(async () => {
+  const divergent = await divergentWallets(probe);
   await probe.end();
   await orm.close();
+  expect(divergent).toEqual([]); // invariante final: wallet.balance == saldo reconstruído pelo ledger
 });
 
 const failingLedger = (boom: Error): UnitOfWork => ({

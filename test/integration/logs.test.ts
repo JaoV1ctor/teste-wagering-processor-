@@ -15,7 +15,7 @@ import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-o
 import { createOrmConfig } from '../../src/infrastructure/persistence/orm.config';
 import { WAGER_CONSUMER_NAME, WagerMessageHandler } from '../../src/interface/sqs/wager-message-handler';
 import { type Api, startApi } from '../support/app';
-import { createProbe, ensureSchema } from '../support/db';
+import { createProbe, divergentWallets, ensureSchema } from '../support/db';
 import { type LogCapture, captureLogs } from '../support/logs';
 import { defaultKey, openWallet, submit, wagerPayload } from '../support/wager';
 
@@ -30,9 +30,11 @@ beforeAll(async () => {
   orm = await MikroORM.init({ ...createOrmConfig(), extensions: [Migrator] });
 });
 afterAll(async () => {
+  const divergent = await divergentWallets(probe);
   await api.close();
   await probe.end();
   await orm.close();
+  expect(divergent).toEqual([]); // invariante final: wallet.balance == saldo reconstruído pelo ledger
 });
 afterEach(() => capture?.restore());
 

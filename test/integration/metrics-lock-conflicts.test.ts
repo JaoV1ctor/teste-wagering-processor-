@@ -11,7 +11,7 @@ import { Money } from '../../src/domain/money';
 import { Metrics } from '../../src/infrastructure/observability/metrics';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { createOrmConfig } from '../../src/infrastructure/persistence/orm.config';
-import { createProbe, ensureSchema } from '../support/db';
+import { createProbe, divergentWallets, ensureSchema } from '../support/db';
 import { type MetricsPage, parseMetrics, total } from '../support/metrics';
 
 const probe = createProbe(4);
@@ -22,8 +22,10 @@ beforeAll(async () => {
   orm = await MikroORM.init({ ...createOrmConfig(), extensions: [Migrator] });
 });
 afterAll(async () => {
+  const divergent = await divergentWallets(probe);
   await probe.end();
   await orm.close();
+  expect(divergent).toEqual([]); // invariante final: wallet.balance == saldo reconstruído pelo ledger
 });
 
 const newWallet = async (uow: MikroOrmUnitOfWork): Promise<string> =>

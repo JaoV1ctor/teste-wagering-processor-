@@ -11,7 +11,7 @@ import { Money } from '../../src/domain/money';
 import { WagerTransactionKind, WagerTransactionStatus } from '../../src/domain/wager-transaction';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { createOrmConfig } from '../../src/infrastructure/persistence/orm.config';
-import { createProbe, ensureSchema, parkPendingReferences } from '../support/db';
+import { createProbe, divergentWallets, ensureSchema, parkPendingReferences } from '../support/db';
 
 const queries: string[] = [];
 const rethrow = (error: unknown): never => {
@@ -27,8 +27,10 @@ beforeAll(async () => {
   uow = new MikroOrmUnitOfWork(orm);
 });
 afterAll(async () => {
+  const divergent = await divergentWallets(probe);
   await probe.end();
   await orm.close();
+  expect(divergent).toEqual([]); // invariante final: wallet.balance == saldo reconstruído pelo ledger
 });
 
 const brl = (v: string) => Money.fromString(v, 'BRL');

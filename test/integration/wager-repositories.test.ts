@@ -11,7 +11,7 @@ import type { Wallet } from '../../src/domain/wallet';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { createOrmConfig } from '../../src/infrastructure/persistence/orm.config';
 import { FailureCode } from '../../src/domain/failure-code';
-import { createProbe, ensureSchema } from '../support/db';
+import { createProbe, divergentWallets, ensureSchema } from '../support/db';
 
 const probe = createProbe(2);
 let orm: MikroORM;
@@ -23,8 +23,10 @@ beforeAll(async () => {
   uow = new MikroOrmUnitOfWork(orm);
 });
 afterAll(async () => {
+  const divergent = await divergentWallets(probe);
   await probe.end();
   await orm.close();
+  expect(divergent).toEqual([]); // invariante final: wallet.balance == saldo reconstruído pelo ledger
 });
 
 const brl = (v: string) => Money.fromString(v, 'BRL');

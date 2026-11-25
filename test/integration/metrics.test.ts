@@ -3,7 +3,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { type Api, startApi } from '../support/app';
-import { createProbe, ensureSchema, parkOutbox } from '../support/db';
+import { createProbe, divergentWallets, ensureSchema, parkOutbox } from '../support/db';
 import { type MetricsPage, scrape, total } from '../support/metrics';
 import { defaultKey, openWallet, reversalPayload, submit, wagerPayload } from '../support/wager';
 
@@ -15,8 +15,10 @@ beforeAll(async () => {
   api = await startApi();
 });
 afterAll(async () => {
+  const divergent = await divergentWallets(probe);
   await api.close();
   await probe.end();
+  expect(divergent).toEqual([]); // invariante final: wallet.balance == saldo reconstruído pelo ledger
 });
 
 const money = (amount: string) => ({ amount, currency: 'BRL' });

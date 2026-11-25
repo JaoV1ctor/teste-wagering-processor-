@@ -9,7 +9,7 @@ import { Money } from '../../src/domain/money';
 import { WagerTransactionKind } from '../../src/domain/wager-transaction';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { createOrmConfig } from '../../src/infrastructure/persistence/orm.config';
-import { ensureSchema } from '../support/db';
+import { createProbe, divergentWallets, ensureSchema } from '../support/db';
 
 const queries: string[] = [];
 let orm: MikroORM;
@@ -22,7 +22,13 @@ beforeAll(async () => {
   uow = new MikroOrmUnitOfWork(orm);
   useCase = new ProcessWagerTransactionUseCase(uow);
 });
-afterAll(() => orm.close());
+afterAll(async () => {
+  const probe = createProbe(1);
+  const divergent = await divergentWallets(probe);
+  await probe.end();
+  await orm.close();
+  expect(divergent).toEqual([]); // invariante final: wallet.balance == saldo reconstruído pelo ledger
+});
 
 const brl = (v: string) => Money.fromString(v, 'BRL');
 const plain = (sql: string) => sql.replace(/\x1b\[[0-9;]*m/g, '').toLowerCase();

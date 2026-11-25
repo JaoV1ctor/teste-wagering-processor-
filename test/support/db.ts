@@ -78,6 +78,21 @@ export async function seedCredits(probe: pg.Pool, walletId: string, count: numbe
   }
 }
 
+/**
+ * Invariante final em TODAS as wallets do banco de testes: devolve as que têm `balance` diferente da soma do ledger. Os arquivos que movem
+ * saldo sem conferir wallet a wallet a exigem vazia ao encerrar.
+ */
+export async function divergentWallets(probe: pg.Pool): Promise<{ id: string; stored: string; rebuilt: string }[]> {
+  const { rows } = await probe.query<{ id: string; stored: string; rebuilt: string }>(
+    `select w.id, w.balance::text as stored,
+            coalesce(sum(case l.direction when 'CREDIT' then l.amount else -l.amount end), 0)::text as rebuilt
+       from wallets w left join wallet_ledger_entries l on l.wallet_id = w.id
+      group by w.id
+     having w.balance <> coalesce(sum(case l.direction when 'CREDIT' then l.amount else -l.amount end), 0)`,
+  );
+  return rows;
+}
+
 /** Invariante final: saldo da wallet == saldo reconstruído pelo ledger. */
 export async function ledgerBalance(probe: pg.Pool, walletId: string): Promise<{ stored: string; rebuilt: string; entries: number }> {
   const { rows } = await probe.query<{ stored: string; rebuilt: string; entries: string }>(
