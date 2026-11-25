@@ -72,7 +72,7 @@ Os testes de integração e de concorrência usam Postgres e MiniStack reais. A 
 
 | Comando | Cobre | Resultado |
 | --- | --- | --- |
-| `bun run check` | tipos, lint e testes de unidade | 442 testes em 31 arquivos, 0 falhas |
+| `bun run check` | tipos, lint e testes de unidade | 460 testes em 32 arquivos, 0 falhas |
 | `bun run test:integration` | Postgres e MiniStack reais | 430 testes em 40 arquivos, 0 falhas |
 | `bun run test:concurrency` | paralelismo e processos reais | 23 testes em 7 arquivos, 0 falhas |
 
@@ -174,7 +174,7 @@ Resumo; o detalhe e a justificativa da maioria estão na seção de cada fase.
 - **Chave de idempotência:** o header HTTP tem os espaços das pontas removidos; `data.idempotencyKey` da fila não.
 - **Contratos:** `POST /wallets` não é idempotente (repetir dá `409`); o `providerId` `internal` não é reservado; não há `statement_timeout`.
 - **Segurança:** sem autenticação; `/metrics` e health abertos; a aplicação conecta como dona das tabelas, e quem tem esse papel pode desligar triggers (não há papel restrito de banco).
-- **Escala:** escritas na mesma wallet são serializadas; throughput sob carga não foi medido (sem teste de carga). Prazos, lotes e backoffs são estimativas. Ver [Fase 2](#fase-2--betwinloss-por-http-idempotência-e-lock).
+- **Escala:** escritas na mesma wallet são serializadas e, na máquina medida, a hot wallet ficou bem abaixo da carga distribuída; o `lock_timeout` não limita a espera total nessa fila; o publisher do outbox publicou mais devagar do que os eventos eram gravados. Medição local e curta, sem valor de capacidade, em [docs/LOAD_TEST.md](LOAD_TEST.md). Prazos, lotes e backoffs continuam estimativas. Ver [Fase 2](#fase-2--betwinloss-por-http-idempotência-e-lock).
 - **Reversões e referências:** sem reversão parcial; referência que não chega em cerca de 3 a 4,5 minutos vira `REJECTED`, mas um reprocesso que só falha com erro não tem teto de tentativas. Ver [Limite do PENDING_REFERENCE](#limite-do-pending_reference).
 - **Fila (falhas):** erro inesperado vai à DLQ na primeira ocorrência, e mensagem anterior à criação da wallet também.
 - **Fila (ordem):** a ordem por wallet não sobrevive à DLQ, não cobre HTTP nem pendências, e não há heartbeat de visibilidade. O `MessageGroupId` é escolhido pelo produtor e o consumidor não o altera: **produtores externos devem normalizar o `walletId` para minúsculas antes de usá-lo como grupo** (o produtor de demonstração, `scripts/send-wager-message.ts`, já faz isso). Sem isso, o mesmo `walletId` com caixas diferentes cai em grupos diferentes, sem ordem entre eles (o saldo continua protegido pelo banco). Comportamentos verificados no MiniStack, não na AWS. Ver [Fase 4](#fase-4--consumidor-sqs-inbox-dlq-e-shutdown).
@@ -667,7 +667,7 @@ Controle negativo: trocando `lockWallet` por uma leitura sem lock, 4 dos 5 teste
 
 ##### Limitações e pontos em aberto
 
-- Wallet muito quente serializa, e requisições aguardando o lock seguram uma conexão do pool do driver. Sob carga muito maior que o pool, o limite efetivo é o pool; medir e dimensionar fica para o teste de carga (bônus). **A Fase 3 acrescentou `lock_timeout`** (espera por lock vencida vira `503`); `statement_timeout` continua sem configuração.
+- Wallet muito quente serializa, e requisições aguardando o lock seguram uma conexão do pool do driver. Sob carga muito maior que o pool, o limite efetivo é o pool; a medição local está em [docs/LOAD_TEST.md](LOAD_TEST.md); o dimensionamento do pool não foi feito. **A Fase 3 acrescentou `lock_timeout`** (espera por lock vencida vira `503`); `statement_timeout` continua sem configuração.
 - `em.execute` interpola no cliente (ver acima). Na Fase 2, um `WIN` que levaria o saldo acima do limite de `NUMERIC(19,2)` virava `500`. **Corrigido na Fase 3**: `REJECTED/BALANCE_LIMIT_EXCEEDED` (422).
 - O `providerId` `internal` não é reservado; só colidiria com identidades `opening:{walletId}`, e o `UNIQUE` já barra a colisão.
 - **Resolvido na Fase 5**: os eventos entram no outbox como último passo da mesma transação e um publisher separado os envia depois do commit (ver "Fase 5").
