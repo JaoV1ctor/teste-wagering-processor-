@@ -72,7 +72,7 @@ Os testes de integração e de concorrência usam Postgres e MiniStack reais. A 
 
 | Comando | Cobre | Resultado |
 | --- | --- | --- |
-| `bun run check` | tipos, lint e testes de unidade | 460 testes em 32 arquivos, 0 falhas |
+| `bun run check` | tipos, lint e testes de unidade | 467 testes em 33 arquivos, 0 falhas |
 | `bun run test:integration` | Postgres e MiniStack reais | 430 testes em 40 arquivos, 0 falhas |
 | `bun run test:concurrency` | paralelismo e processos reais | 23 testes em 7 arquivos, 0 falhas |
 
@@ -173,6 +173,9 @@ Resumo; o detalhe e a justificativa da maioria estão na seção de cada fase.
 
 - **Chave de idempotência:** o header HTTP tem os espaços das pontas removidos; `data.idempotencyKey` da fila não.
 - **Contratos:** `POST /wallets` não é idempotente (repetir dá `409`); o `providerId` `internal` não é reservado; não há `statement_timeout`.
+- **Testes de abuso:** `bun run test:security`; casos, achados e o que não foi coberto em [docs/SECURITY_TESTS.md](SECURITY_TESTS.md).
+- **Entre provedores:** como a chave de idempotência é única no serviço, um provedor pode ocupar antes a chave de outro, que passa a receber `409`. Sem vazamento de dados; corrigir exige migration.
+- **Pool de conexões:** requisições suficientes contra uma wallet travada prendem todas as conexões de uma instância; as outras wallets esperam e o readiness responde `503`.
 - **Segurança:** sem autenticação; `/metrics` e health abertos; a aplicação conecta como dona das tabelas, e quem tem esse papel pode desligar triggers (não há papel restrito de banco).
 - **Escala:** escritas na mesma wallet são serializadas e, na máquina medida, a hot wallet ficou bem abaixo da carga distribuída; o `lock_timeout` não limita a espera total nessa fila; o publisher do outbox publicou mais devagar do que os eventos eram gravados. Medição local e curta, sem valor de capacidade, em [docs/LOAD_TEST.md](LOAD_TEST.md). Prazos, lotes e backoffs continuam estimativas. Ver [Fase 2](#fase-2--betwinloss-por-http-idempotência-e-lock).
 - **Reversões e referências:** sem reversão parcial; referência que não chega em cerca de 3 a 4,5 minutos vira `REJECTED`, mas um reprocesso que só falha com erro não tem teto de tentativas. Ver [Limite do PENDING_REFERENCE](#limite-do-pending_reference).
@@ -367,6 +370,7 @@ Pontos que o enunciado deixa em aberto ou ambíguos, e a leitura adotada.
 | 17 | `correlationId` ausente | É o id da transação | Fase 5 |
 | 18 | Divergência na reconciliação | Resposta `200` com `consistent: false`, log e métrica; nunca corrige | Fase 6 |
 | 19 | Caixa dos UUIDs | Normalizados para minúsculas uma vez, na borda (`uuidSchema`, `src/interface/http/wallets.dto.ts`): `playerId` e `walletId` no HTTP e na mensagem SQS, e `:walletId` e `:transactionId` nas rotas. O `payloadHash` usa o valor já normalizado. Ids que não são UUID (`idempotencyKey`, `externalTransactionId`, `referenceExternalTransactionId` e os demais) ficam como chegaram. O `MessageGroupId` não passa pela borda: o produtor deve normalizar o `walletId` antes de escolhê-lo. Provas em `test/unit/uuid-case.test.ts`, `test/integration/uuid-case.test.ts` e `test/unit/send-wager-message.test.ts` | Idempotência e payloadHash |
+| 20 | Texto que não pode ser armazenado | U+0000 e surrogate UTF-16 solto em qualquer texto de entrada são recusados na borda (`textSchema`, `src/interface/http/wallets.dto.ts`): `400` no HTTP, DLQ `MALFORMED_MESSAGE` na fila. Os demais caracteres Unicode são aceitos e gravados como vieram | Mapeamento HTTP |
 
 ### Registro de decisões por fase
 
@@ -533,6 +537,7 @@ A tabela é a atual (os status de transação entraram nas fases 2 e 3):
 | Entrada inválida | `400` | `VALIDATION_ERROR`, `INVALID_CURSOR`, `BAD_REQUEST` |
 | Recurso inexistente | `404` | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND`, `NOT_FOUND` |
 | Conflito | `409` | `IDEMPOTENCY_CONFLICT`, `WALLET_ALREADY_EXISTS` |
+| Corpo de formulário, ou codificação não aceita | `415` | `UNSUPPORTED_MEDIA_TYPE` |
 | Falha transitória de infraestrutura | `503` + `Retry-After` | `SERVICE_UNAVAILABLE` (pode reenviar) |
 | Erro nosso | `500` | `INTERNAL_ERROR` genérico, sem vazar mensagem, stack ou string de conexão |
 
