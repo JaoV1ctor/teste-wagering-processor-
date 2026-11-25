@@ -13,10 +13,10 @@ import { requireEnv } from '../../src/infrastructure/env';
 import { createSqsClient } from '../../src/infrastructure/messaging/sqs-client';
 import { createOrmConfig } from '../../src/infrastructure/persistence/orm.config';
 import { type Api, startApi } from './app';
+import { leaksInReply, SECRET_CANARY } from './leaks';
 import { newQueues, type TestQueues } from './sqs';
 
-/** Credencial falsa e única dada à aplicação isolada: se aparecer em resposta ou log, é vazamento. */
-export const SECRET_CANARY = 'sec-canary-aws-secret-8f2c1d';
+export { leaksIn, SECRET_CANARY } from './leaks';
 
 export interface Isolated {
   api: Api;
@@ -105,19 +105,6 @@ export async function snapshot(probe: pg.Pool): Promise<Record<string, string>> 
   return rows[0]!;
 }
 
-/** Marcas de detalhe interno que não podem aparecer em resposta nenhuma. */
-const LEAKS: [string, RegExp][] = [
-  ['stack trace', /\n\s+at |\bat [\w.<>]+ \(|node_modules|"stack"/i],
-  ['SQL', /\bselect\b[\s\S]{0,200}\bfrom\b|\binsert into\b|\bupdate\s+"?\w+"?\s+set\b/i],
-  ['erro do banco ou do driver', /relation "|column "|violates|SQLSTATE|syntax error|invalid byte sequence|invalid input syntax|DriverException|MikroORM|\bpg_|duplicate key/i],
-  ['string de conexão ou credencial', /postgres(ql)?:\/\/|:wager@|sec-canary/i],
-  ['caminho do servidor', /[A-Z]:\\|\/src\/(application|domain|infrastructure|interface)\//],
-];
-
-export function leaksIn(text: string): string[] {
-  return LEAKS.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
-}
-
 export interface Reply {
   status: number;
   headers: Headers;
@@ -167,8 +154,7 @@ export async function expectRejected(probe: pg.Pool, attempts: readonly Attempt[
     const reply = await attempt();
     statuses.push(reply.status);
     if (!allowed.includes(reply.status)) problems.push(`${label}: HTTP ${reply.status}`);
-    const text = sent === undefined ? reply.text : reply.text.replaceAll(JSON.stringify(sent).slice(1, -1), '');
-    for (const leak of leaksIn(text)) problems.push(`${label}: vazou ${leak}`);
+    for (const leak of leaksInReply(reply.text, sent)) problems.push(`${label}: vazou ${leak}`);
   }
   expect(problems).toEqual([]);
   expect(await snapshot(probe)).toEqual(before);
