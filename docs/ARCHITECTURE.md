@@ -13,7 +13,7 @@ Decisões, alternativas, trade-offs e limitações do serviço. A primeira parte
 - [Autenticação](#autenticação)
 - [Limitações conhecidas](#limitações-conhecidas)
 - [Detalhes](#detalhes)
-- [Regras e contratos](#regras-e-contratos): [estados](#máquina-de-estados-de-wagertransaction), [códigos de falha](#códigos-de-falha), [payloadHash](#idempotência-e-payloadhash), [limite do PENDING_REFERENCE](#limite-do-pending_reference)
+- [Regras e contratos](#regras-e-contratos): [estados](#máquina-de-estados-de-wagertransaction), [códigos de falha](#códigos-de-falha), [payloadHash](#idempotência-e-payloadhash), [limite do PENDING_REFERENCE](#limite-do-pending_reference), [interpretações](#interpretações-do-enunciado)
 - [Registro de decisões por fase](#registro-de-decisões-por-fase):
   [0, base técnica](#fase-0--base-técnica-e-spike-de-compatibilidade) ·
   [1, domínio e wallet](#fase-1--domínio-e-wallet) ·
@@ -266,6 +266,31 @@ Vale para `REFUND`, `ROLLBACK` e `WIN`/`LOSS` com referência. Constantes em `sr
 
 **É um limite de tentativas, não um TTL por relógio.** Só conta a avaliação concluída. Se o reprocesso falha com erro, a transação SQL é desfeita, `attempts` não muda e a pendência volta após o lease de 30 s, **sem teto**; com o worker parado, o prazo também não corre.
 Prova do limite: `test/integration/pending-reference-worker.test.ts`. Justificativa de cada número: "PENDING_REFERENCE e o worker" (Fase 3).
+
+#### Interpretações do enunciado
+
+Pontos que o enunciado deixa em aberto ou ambíguos, e a leitura adotada.
+
+| # | Tema | Leitura adotada | Detalhe |
+| --- | --- | --- | --- |
+| 1 | Reversão única | No máximo **uma** reversão efetiva (`REFUND` ou `ROLLBACK`) por referência, não uma por tipo; rejeitada não conta; desfazer o `REFUND` não libera a `BET` | Fase 3 |
+| 2 | Valores | Toda submissão exige `amount > 0`, inclusive `LOSS` (que não move saldo); `initialBalance` zero é aceito e não gera `OPENING` | Fases 1 e 2 |
+| 3 | `WIN`/`LOSS` com referência | Opcional; se vier, tem de ser uma `BET` `PROCESSED` do mesmo player, wallet, rodada e moeda; o valor pode diferir; ausente no banco, fica pendente | Fase 3 |
+| 4 | Referência ainda pendente | Quem depende dela também espera | Fase 3 |
+| 5 | Resolução da referência | Por `(providerId, referenceExternalTransactionId)`: o mesmo id em outro provedor não é a referência | Fase 3 |
+| 6 | Replay | Mesmo status HTTP e `failureCode`, saldo observado na época; replay de pendente devolve o estado atual | Fases 2 e 3 |
+| 7 | Duas chaves de unicidade | Mesmo `(providerId, externalTransactionId)` com outra chave é conflito `409` | Fase 2 |
+| 8 | `Idempotency-Key` | Obrigatória; o formato `{providerId}:{externalTransactionId}` é recomendação, não exigência | Fase 2 |
+| 9 | Wallet inexistente | `404`, nada gravado | Fase 2 |
+| 10 | Player ou moeda divergentes | Rejeição auditável (`422`); precedência: player, moeda, referência, saldo | Fases 2 e 3 |
+| 11 | Crédito acima do máximo | Código próprio, `BALANCE_LIMIT_EXCEEDED`, em vez de erro `500` | Fase 3 |
+| 12 | Conflito e wallet inexistente pela fila | Tratados como permanentes (DLQ), não como erro de negócio com ack, porque nada fica gravado | Fase 4 |
+| 13 | `FAILED` pela fila | Não é gravado; a trilha é a DLQ com `FailureReason` | Fase 4 |
+| 14 | `messageId` repetido com outro conteúdo | Erro permanente | Fase 4 |
+| 15 | Eventos | `LOSS` gera `Processed` sem `BalanceChanged`; `PendingReference` só na 1ª vez; replay não gera evento; `OPENING` gera os mesmos de qualquer transação aplicada | Fases 5 e 6 |
+| 16 | Destino dos eventos | Fila SQS padrão `wager-events` | Fase 5 |
+| 17 | `correlationId` ausente | É o id da transação | Fase 5 |
+| 18 | Divergência na reconciliação | Resposta `200` com `consistent: false`, log e métrica; nunca corrige | Fase 6 |
 
 ### Registro de decisões por fase
 
