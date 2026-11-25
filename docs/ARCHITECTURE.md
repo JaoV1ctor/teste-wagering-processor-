@@ -72,7 +72,7 @@ Os testes de integração e de concorrência usam Postgres e MiniStack reais. A 
 
 | Comando | Cobre | Resultado |
 | --- | --- | --- |
-| `bun run check` | tipos, lint e testes de unidade | 514 testes em 37 arquivos, 0 falhas |
+| `bun run check` | tipos, lint e testes de unidade | 515 testes em 37 arquivos, 0 falhas |
 | `bun run test:integration` | Postgres e MiniStack reais | 455 testes em 43 arquivos, 0 falhas |
 | `bun run test:concurrency` | paralelismo e processos reais | 32 testes em 9 arquivos, 0 falhas |
 
