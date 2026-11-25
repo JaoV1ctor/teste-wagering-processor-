@@ -13,8 +13,10 @@ import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-o
 import { createOrmConfig } from '../../src/infrastructure/persistence/orm.config';
 import { WAGER_CONSUMER_NAME } from '../../src/interface/sqs/wager-message-handler';
 import { createProbe, ensureSchema, ledgerBalance } from '../support/db';
+import { expectEventsConsistentWithLedger, outboxOfWallet, typesOf } from '../support/events';
 import {
-  createTestConsumer, InterceptingQueue, isQueueEmpty, newQueues, type Outcome, RecordingProcessor, sendRaw, sendWager, type TestWallet, waitFor,
+  createTestConsumer, InterceptingQueue, isQueueEmpty, newQueues, type Outcome, RecordingProcessor, sendRaw, sendWager, type TestQueues, type TestWallet,
+  waitFor,
 } from '../support/sqs';
 
 const probe = createProbe(6);
@@ -44,7 +46,81 @@ const inboxCount = async (messageId: string) =>
   (await probe.query('select 1 from inbox_messages where consumer_name = $1 and message_id = $2', [WAGER_CONSUMER_NAME, messageId])).rows.length;
 const isFirstProcessing = (outcome: Outcome) => !(outcome instanceof Error) && 'transaction' in outcome && !outcome.idempotentReplay;
 
-describe('#5 worker morre depois do commit e antes do ack', () => {
+/**
+ * Sobe `consumer-child.ts` (um consumidor completo em outro processo) nas filas do teste e espera o `READY`. `waitForLine` espera o filho
+ * imprimir uma linha.
+ */
+async function spawnConsumer(queues: TestQueues, env: Record<string, string> = {}) {
+  const child = Bun.spawn([process.execPath, 'test/support/consumer-child.ts'], {
+    env: { ...process.env, SQS_WAGER_QUEUE_NAME: queues.names.queueName, SQS_WAGER_DLQ_NAME: queues.names.deadLetterQueueName, ...env },
+    stdout: 'pipe', stderr: 'inherit',
+  });
+  const reader = child.stdout.getReader();
+  let output = '';
+  const waitForLine = async (line: string, timeoutMs = 30_000): Promise<void> => {
+    // O prazo mata o filho: a leitura termina, o teste falha com a mensagem certa e nenhum processo sobra.
+    const deadline = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    try {
+      while (!output.includes(line)) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error(`o processo filho terminou (ou passou do prazo) sem imprimir ${line}`);
+        output += new TextDecoder().decode(value);
+      }
+    } finally {
+      clearTimeout(deadline);
+    }
+  };
+  await waitForLine('READY');
+  return { process: child, waitForLine };
+}
+
+describe('#5 processo real morto (SIGKILL) depois do commit e antes do ack', () => {
+  test('o commit sobrevive, a mensagem é reentregue e outra instância a confirma sem repetir débito, ledger, inbox ou evento', async () => {
+    const queues = await newQueues(client);
+    const wallet = await newWallet('100.00');
+    // O filho processa e commita; ao chegar no ack avisa e fica parado, sem nunca enviar o DeleteMessage. Nesse instante é morto.
+    const child = await spawnConsumer(queues, { CONSUMER_HANG_BEFORE_ACK: '1' });
+    let message: Awaited<ReturnType<typeof sendWager>>;
+    try {
+      message = await sendWager(client, queues, wallet, { amount: '30.00' });
+      await child.waitForLine('ACK-PENDENTE');
+      expect(child.process.exitCode).toBeNull(); // ainda vivo: quem o encerra é o SIGKILL
+    } finally {
+      child.process.kill('SIGKILL');
+      await child.process.exited;
+    }
+    expect(child.process.signalCode).toBe('SIGKILL');
+
+    const state = async () => ({
+      transactions: await transactionCount(message.data.externalTransactionId),
+      inbox: await inboxCount(message.messageId),
+      balance: await ledgerBalance(probe, wallet.id),
+      events: typesOf(await outboxOfWallet(probe, wallet.id)),
+    });
+    const committed = {
+      transactions: 1, inbox: 1, balance: { stored: '70.00', rebuilt: '70.00', entries: 2 }, events: ['WagerTransactionProcessed', 'WalletBalanceChanged'],
+    };
+    // Estado exato do crash: tudo commitado, nada confirmado.
+    expect(await state()).toEqual(committed);
+    expect(await isQueueEmpty(client, queues.mainUrl)).toBe(false);
+
+    const survivor = new RecordingProcessor(uow);
+    const { consumer } = createTestConsumer({ queue: new SqsMessageQueue(client, queues.names), processor: survivor });
+    consumer.start();
+    try {
+      await waitFor('mensagem reentregue e confirmada', () => isQueueEmpty(client, queues.mainUrl), 30_000);
+    } finally {
+      await consumer.stop();
+    }
+
+    expect(survivor.outcomes).toEqual([{ duplicateMessage: true }]);
+    expect(await state()).toEqual(committed);
+    await expectEventsConsistentWithLedger(probe, wallet.id);
+    expect(await isQueueEmpty(client, queues.dlqUrl)).toBe(true);
+  }, 90_000);
+});
+
+describe('#5 worker morre depois do commit e antes do ack (falha no ack, no mesmo processo)', () => {
   test('a mensagem é reentregue e o reprocessamento não duplica débito, ledger nem inbox', async () => {
     const queues = await newQueues(client);
     const wallet = await newWallet('100.00');
@@ -129,18 +205,8 @@ describe('#5b worker morre ANTES do commit (processo real, SIGKILL)', () => {
     const holder = await probe.connect();
     await holder.query('BEGIN');
     await holder.query('select id from wallets where id = $1 for no key update', [wallet.id]);
-    const child = Bun.spawn([process.execPath, 'test/support/consumer-child.ts'], {
-      env: { ...process.env, SQS_WAGER_QUEUE_NAME: queues.names.queueName, SQS_WAGER_DLQ_NAME: queues.names.deadLetterQueueName },
-      stdout: 'pipe', stderr: 'inherit',
-    });
+    const { process: child } = await spawnConsumer(queues);
     try {
-      const reader = child.stdout.getReader();
-      let output = '';
-      while (!output.includes('READY')) {
-        const { value, done } = await reader.read();
-        if (done) throw new Error('o processo filho terminou antes de ficar pronto');
-        output += new TextDecoder().decode(value);
-      }
       const message = await sendWager(client, queues, wallet, { amount: '30.00' });
       await waitFor('filho dentro da transação, esperando o lock da wallet', async () => {
         const { rows } = await probe.query("select 1 from pg_stat_activity where wait_event_type = 'Lock' and query ilike '%wallets%'");
