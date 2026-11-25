@@ -134,9 +134,15 @@ Como o `providerId` entra no `payloadHash`, um replay só devolve o resultado a 
 
 ### Ponto de extensão no código
 
+**Hoje o `AuthGuard` é no-op:** `authenticate()` devolve `true` sem ler a requisição, e o adaptador da porta aceita qualquer `providerId`. Nada é autenticado nem autorizado.
+A validação real entra em dois lugares:
+
+1. **Quem é o chamador:** em `AuthGuard.authenticate`. Ele hoje não recebe parâmetros; `canActivate`, que já tem o `ExecutionContext`, passaria o contexto a ele para ler e validar o token.
+2. **Em nome de quem pode agir:** em um novo adaptador de `ProviderIdentityPort`, registrado no lugar de `TrustedProviderIdentity` no token `PROVIDER_IDENTITY` em `src/app.module.ts`.
+
 | Peça | Onde | Hoje | Com autenticação real |
 | --- | --- | --- | --- |
-| `AuthGuard`, global (`APP_GUARD`) | `src/interface/http/auth.guard.ts` | `authenticate()` aceita tudo | Lê a requisição do `ExecutionContext` e valida o token |
+| `AuthGuard`, global (`APP_GUARD`) | `src/interface/http/auth.guard.ts` | No-op: `authenticate()` devolve `true` | Recebe o `ExecutionContext` e valida o token |
 | `@OpenRoute()` | `HealthController`, `MetricsController` | Essas rotas nem chegam a `authenticate()` | Continuam abertas |
 | `ProviderIdentityPort` | `src/application/ports.ts` | Chamada em `POST /wagering/transactions`, depois da validação e antes do caso de uso | Compara a claim do token com `declaredProviderId` e rejeita |
 | Adaptador `TrustedProviderIdentity` | `src/infrastructure/identity/trusted-provider-identity.ts` | Confia no `providerId` do corpo | Substituído na composição (`src/app.module.ts`) |
