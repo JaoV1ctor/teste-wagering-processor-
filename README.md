@@ -1,17 +1,22 @@
 # Distributed Wagering Processor
 
+**Nesta página:** [Início rápido](#início-rápido) · [Comandos](#comandos) · [Como funciona](#como-funciona) · [Exemplos](#exemplos-com-curl) · [Garantias](#mapa-de-garantias) · [Testes](#testes-e-evidências) · [Limitações](#limitações-conhecidas) · [Problemas](#solução-de-problemas)
+
 ## O que é
 
-Serviço (NestJS sob Bun, PostgreSQL e SQS) que processa transações de apostas de vários provedores e mantém, por wallet, um saldo materializado e um ledger imutável que conferem entre si, mesmo com mensagens duplicadas, fora de ordem ou simultâneas e com várias instâncias.
+Um serviço que recebe apostas, ganhos e estornos de vários provedores de jogos e mantém correto o saldo de cada carteira (*wallet*), junto com um extrato que nunca é alterado (*ledger*).
 
-Implementado:
+O difícil é continuar correto quando as coisas dão errado:
 
-- API HTTP: wallets, ledger paginado, submissão e consulta de transações (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`), reconciliação, health e métricas Prometheus.
-- A mesma submissão por fila SQS FIFO, com inbox persistente e DLQ.
-- Idempotência garantida pelo banco, lock pessimista por wallet e `Money` em `bigint` (dinheiro nunca é `number`).
-- Transactional outbox: os eventos só são publicados depois do commit (entrega at-least-once).
-- Worker para transações que chegam antes da transação referenciada (`PENDING_REFERENCE`).
-- **Não há autenticação** (ver [Autenticação](#autenticação)).
+| Situação | O que o serviço faz |
+| --- | --- |
+| A mesma aposta chega duas vezes | Aplica uma vez e devolve o resultado gravado (idempotência garantida pelo banco) |
+| Duas apostas disputam o mesmo saldo | Processa uma por vez em cada wallet (lock no PostgreSQL); o saldo não fica negativo |
+| O estorno chega antes da aposta | Guarda como pendente e tenta de novo (`PENDING_REFERENCE`) |
+| A aplicação cai logo depois de gravar | O evento já está no banco e é publicado depois (*transactional outbox*) |
+| Valores com centavos | Dinheiro nunca é `number`: `bigint` em centavos |
+
+Entradas: API HTTP e fila SQS. Stack: NestJS sob Bun, PostgreSQL e SQS. **Não há autenticação** (ver [Autenticação](#autenticação)).
 
 Decisões, alternativas, trade-offs e limitações: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -127,143 +132,135 @@ Medido em 2026-11-25, uma execução por comando (os tempos variam entre execuç
 
 **Linux e macOS não foram verificados.**
 
-## Visão do sistema
+## Como funciona
 
-### Arquitetura
+Três desenhos, do geral para o detalhe.
 
-Tudo roda em um único processo, que pode ter várias instâncias. HTTP e fila entram no mesmo `ProcessWagerTransactionUseCase`; o worker e o publisher são laços de fundo que dividem o trabalho entre instâncias por lease com `SKIP LOCKED`. O PostgreSQL é a única fonte de verdade.
+### 1. O sistema inteiro
+
+Há duas portas de entrada, HTTP e fila, e as duas usam **a mesma regra**. A regra grava tudo no PostgreSQL de uma vez. O que vem depois (publicar eventos e resolver pendências) é feito em segundo plano, a partir do banco.
 
 ```mermaid
-flowchart LR
-    provider["Provedor"]
-    producer["Produtor interno: scripts/send-wager-message.ts"]
-    scraper["Orquestrador e coletor de métricas"]
-    inqueue[/"SQS FIFO: wager-transactions.fifo"/]
+flowchart TD
+    provider["Provedor"] -->|"HTTP"| api["API HTTP"]
+    queue[/"Fila wager-transactions.fifo"/] --> consumer["Consumidor SQS"]
+    consumer -.->|"mensagem sem conserto"| dlq[/"Fila wager-transactions-dlq.fifo"/]
 
-    subgraph app["Aplicação NestJS sob Bun"]
-        guard["Guards globais: AuthGuard no-op e JsonOnlyGuard"]
-        api["Controllers de wallets e transações"]
-        consumer["QueueConsumer e WagerMessageHandler"]
-        usecase["ProcessWagerTransactionUseCase"]
-        reconcile["ReconcileWalletUseCase"]
-        worker["Worker de PENDING_REFERENCE: ReprocessPendingReferencesUseCase"]
-        publisher["Publisher do outbox: PublishOutboxUseCase"]
-        obs["Metrics e logs JSON no stdout"]
-        open["Rotas abertas: /health/live, /health/ready, /metrics (o readiness consulta o PostgreSQL e as filas de entrada e de eventos)"]
-    end
+    api --> usecase["Regra única: ProcessWagerTransactionUseCase"]
+    consumer --> usecase
 
-    db[("PostgreSQL: wallets, wager_transactions, wallet_ledger_entries, inbox_messages, outbox_messages")]
-    events[/"SQS padrão: wager-events"/]
-    dlq[/"DLQ FIFO: wager-transactions-dlq.fifo"/]
+    usecase -->|"grava tudo em um commit"| db[("PostgreSQL")]
 
-    provider -->|"HTTP"| guard
-    guard -->|"requisição aceita"| api
-    api -->|"POST /wagering/transactions"| usecase
-    api -->|"POST /wallets/:walletId/reconciliation"| reconcile
-    api -->|"wallets, ledger e consultas"| db
-    producer -->|"WagerTransactionRequested"| inqueue
-    inqueue -->|"long polling"| consumer
-    consumer -->|"mesmo caso de uso, com inbox"| usecase
-    consumer -->|"ack, só depois do commit"| inqueue
-    consumer -->|"falha permanente, com FailureReason"| dlq
-    inqueue -->|"redrive após 5 recebimentos"| dlq
-    usecase -->|"uma transação SQL"| db
-    reconcile -->|"somente leitura: saldo e soma do ledger"| db
-    db -->|"claim das pendências vencidas"| worker
-    worker -->|"liquida, travando a wallet primeiro"| db
-    db -->|"claim de eventos commitados"| publisher
-    publisher -->|"SendMessage"| events
-    publisher -->|"grava published_at"| db
-    usecase -->|"relatório, depois do commit"| obs
-    consumer -->|"DLQ, retries e logs"| obs
-    reconcile -->|"resultado e divergência"| obs
-    scraper -->|"GET, sem autenticação"| open
-    obs -->|"conteúdo de GET /metrics"| open
+    db -->|"eventos já gravados"| publisher["Publisher"]
+    publisher --> events[/"Fila wager-events"/]
+    db <-->|"transações pendentes"| worker["Worker de PENDING_REFERENCE"]
+
+    classDef entrada fill:#dbeafe,stroke:#1d4ed8,color:#111827
+    classDef regra fill:#fef3c7,stroke:#b45309,color:#111827
+    classDef banco fill:#dcfce7,stroke:#15803d,color:#111827
+    classDef fundo fill:#f3f4f6,stroke:#4b5563,color:#111827
+    class provider,api,queue,consumer entrada
+    class usecase regra
+    class db banco
+    class dlq,publisher,events,worker fundo
 ```
 
-### Fluxo de uma aposta
+| Cor | O que é |
+| --- | --- |
+| Azul | Entrada |
+| Amarelo | Regra de negócio |
+| Verde | Banco, a única fonte de verdade |
+| Cinza | Trabalho em segundo plano e destinos |
 
-Uma `BET` por HTTP. O replay de uma chave conhecida responde sem travar a wallet. Em uma chave nova, a primeira instrução que toca a wallet é o `FOR NO KEY UPDATE` (antes dele só há o `lock_timeout` da transação e, na entrada por fila, o `INSERT` no inbox, que não tocam a wallet). Transação, ledger, saldo e outbox entram no mesmo commit, e o publisher só enxerga o que foi commitado.
+- O consumidor busca mensagens por *long polling* e só confirma (*ack*) **depois do commit**. Falha transitória volta à fila; falha permanente vai para a DLQ.
+- Pode haver várias instâncias da aplicação: quem coordena é o banco, não a memória do processo.
+
+Para operar o serviço:
+
+| Onde | Para que serve |
+| --- | --- |
+| `POST /wallets/:walletId/reconciliation` | Compara o saldo gravado com a soma do ledger. Só lê, nunca corrige |
+| `GET /health/live` | O processo está respondendo? Rota aberta |
+| `GET /health/ready` | PostgreSQL e filas de entrada e de eventos estão acessíveis? Rota aberta |
+| `GET /metrics` | Métricas no formato Prometheus. Rota aberta |
+| Saída padrão (`stdout`) | Logs em JSON, com identificadores e resultado, sem o corpo da requisição |
+
+### 2. Uma aposta, passo a passo
+
+Uma `BET` enviada por HTTP. Os quatro desfechos principais: reenvio, conflito, saldo insuficiente e sucesso.
 
 ```mermaid
 sequenceDiagram
-    autonumber
     participant P as Provedor
-    participant API as API HTTP
-    participant UC as Caso de uso
+    participant S as Serviço
     participant DB as PostgreSQL
-    participant OB as Tabela outbox_messages
     participant PUB as Publisher
-    participant Q as SQS wager-events
+    participant Q as Fila wager-events
 
-    P->>API: POST /wagering/transactions com Idempotency-Key
-    API->>API: guards, validação do corpo e cabeçalhos, identidade do provedor
-    API->>UC: execute
-    UC->>UC: payloadHash, SHA-256 dos campos de negócio
-    UC->>DB: busca por provider_id e idempotency_key, sem lock
+    P->>S: Envia a aposta com Idempotency-Key
+    S->>S: Valida e calcula o payloadHash
+    S->>DB: Essa chave já existe?
 
-    alt chave conhecida com o mesmo payloadHash
-        UC-->>API: transação gravada, idempotentReplay true
-        API-->>P: status HTTP do resultado gravado
-    else chave conhecida com outro payloadHash
-        UC-->>API: IdempotencyConflictError
-        API-->>P: 409 IDEMPOTENCY_CONFLICT
-    else chave nova
-        UC->>DB: BEGIN e lock_timeout da transação
-        UC->>DB: SELECT da wallet FOR NO KEY UPDATE
-        DB-->>UC: wallet travada
-        UC->>UC: domínio decide com o saldo travado
-        alt saldo insuficiente
-            UC->>DB: INSERT wager_transactions REJECTED, ON CONFLICT DO NOTHING
-            UC->>OB: INSERT WagerTransactionRejected
-            UC->>DB: COMMIT
-            UC-->>API: REJECTED, INSUFFICIENT_BALANCE
-            API-->>P: 422
-        else sucesso
-            UC->>DB: INSERT wager_transactions PROCESSED, ON CONFLICT DO NOTHING
-            UC->>DB: UPDATE wallets, saldo e version
-            UC->>DB: INSERT wallet_ledger_entries
-            UC->>OB: INSERT WagerTransactionProcessed e WalletBalanceChanged
-            UC->>DB: COMMIT
-            UC-->>API: PROCESSED
-            API-->>P: 201
+    alt Já existe, mesmos dados de negócio
+        S-->>P: Devolve o resultado gravado
+    else Já existe, dados de negócio diferentes
+        S-->>P: 409 conflito
+    else Chave nova
+        S->>DB: Trava a wallet
+        alt Saldo insuficiente
+            S->>DB: Grava a rejeição e o evento, COMMIT
+            S-->>P: 422 REJECTED
+        else Saldo suficiente
+            S->>DB: Grava transação, ledger, saldo e evento, COMMIT
+            S-->>P: 201 PROCESSED
         end
     end
 
-    Note over UC,DB: Se outro commit levar a mesma chave antes, o INSERT não grava e a resposta vira replay ou 409
-
-    loop laço de fundo, independente da requisição
-        PUB->>OB: claim por lease com SKIP LOCKED, só linhas commitadas
-        OB-->>PUB: eventos não publicados e vencidos
-        PUB->>Q: SendMessage com eventId e eventType
-        PUB->>OB: UPDATE published_at
-    end
+    Note over DB,Q: Os eventos só saem depois do commit, em segundo plano
+    PUB->>DB: Busca eventos ainda não publicados
+    PUB->>Q: Publica
+    PUB->>DB: Marca como publicado
 ```
 
-### Estados de WagerTransaction
+O que o desenho resume:
 
-A transação nasce `PENDING` no domínio e é gravada uma única vez, já em `PROCESSED`, `REJECTED` ou `PENDING_REFERENCE`: a aplicação não persiste `PENDING`. A transição `fail` existe no domínio, mas nenhum caminho atual a chama. `PROCESSED`, `REJECTED` e `FAILED` são terminais, e o trigger `wager_transactions_guard` recusa qualquer alteração deles.
+| Passo | No código |
+| --- | --- |
+| Serviço | Controller HTTP e `ProcessWagerTransactionUseCase` |
+| Mesmos dados de negócio | Mesmo `payloadHash`, o SHA-256 desses campos |
+| Essa chave já existe? | Busca por `provider_id` e `idempotency_key`, sem lock. Se duas requisições passarem juntas, o `UNIQUE` do banco decide: a segunda vira reenvio ou conflito |
+| Trava a wallet | `SELECT ... FOR NO KEY UPDATE`, a primeira instrução da transação SQL que toca a wallet |
+| Grava a rejeição ou o sucesso | Tabelas `wager_transactions`, `wallet_ledger_entries`, `wallets` e `outbox_messages`, no mesmo commit |
+| Publisher | Reivindica os eventos com `SKIP LOCKED`. Se cair entre publicar e marcar, publica de novo: a entrega é *at-least-once* |
+
+### 3. Os estados de uma transação
 
 ```mermaid
 stateDiagram-v2
     direction LR
-    [*] --> PENDING : create
-    PENDING --> PROCESSED : markProcessed
-    PENDING --> REJECTED : reject
-    PENDING --> PENDING_REFERENCE : markPendingReference
-    PENDING --> FAILED : fail
-    PENDING_REFERENCE --> PENDING_REFERENCE : reagenda
-    PENDING_REFERENCE --> PROCESSED : markProcessed
-    PENDING_REFERENCE --> REJECTED : reject
-    PENDING_REFERENCE --> FAILED : fail
+    [*] --> PENDING
+    PENDING --> PROCESSED : aplicada
+    PENDING --> REJECTED : recusada
+    PENDING --> PENDING_REFERENCE : falta a referência
+    PENDING_REFERENCE --> PROCESSED : referência chegou
+    PENDING_REFERENCE --> REJECTED : recusada ou desistiu
     PROCESSED --> [*]
     REJECTED --> [*]
-    FAILED --> [*]
 ```
+
+| Estado | Significa | Ainda muda? |
+| --- | --- | --- |
+| `PENDING` | Acabou de ser criada em memória; nunca é gravada assim | Sim |
+| `PENDING_REFERENCE` | Cita uma transação que ainda não chegou (por exemplo, um estorno antes da aposta). O worker tenta de novo | Sim |
+| `PROCESSED` | Aplicada | Não |
+| `REJECTED` | Recusada por uma regra, com um código de falha | Não |
+| `FAILED` | Erro permanente. O domínio permite chegar a ele a partir de `PENDING` e `PENDING_REFERENCE`, mas nenhum caminho atual o usa; por isso não está no desenho | Não |
+
+Estados finais não mudam: além do domínio, o trigger `wager_transactions_guard` recusa a alteração no banco.
 
 ## Exemplos com curl
 
-Comandos em bash, executados contra a aplicação local com um banco recém-migrado. As respostas abaixo são as reais; ids e datas serão diferentes na sua execução. Cada resposta HTTP vem seguida do status, impresso pelo `-w`.
+Comandos em bash, executados contra a aplicação local com um banco recém-migrado. As respostas abaixo são as reais, apenas com o JSON quebrado em linhas para leitura; ids e datas serão diferentes na sua execução. Cada resposta HTTP vem seguida do status, impresso pelo `-w`.
 
 ### Criar uma wallet
 
@@ -277,7 +274,12 @@ curl -s -w '\nHTTP %{http_code}\n' -X POST $BASE/wallets \
 ```
 
 ```
-{"id":"949a4d2c-dead-453f-b4c3-36fbbac881bf","playerId":"3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d","balance":{"amount":"100.00","currency":"BRL"},"version":1}
+{
+  "id": "949a4d2c-dead-453f-b4c3-36fbbac881bf",
+  "playerId": "3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d",
+  "balance": { "amount": "100.00", "currency": "BRL" },
+  "version": 1
+}
 HTTP 201
 ```
 
@@ -295,7 +297,12 @@ bet "$BET"
 ```
 
 ```
-{"transactionId":"be935f1f-15ad-4d95-82d4-65734d8d10b5","status":"PROCESSED","balance":{"amount":"75.00","currency":"BRL"},"idempotentReplay":false}
+{
+  "transactionId": "be935f1f-15ad-4d95-82d4-65734d8d10b5",
+  "status": "PROCESSED",
+  "balance": { "amount": "75.00", "currency": "BRL" },
+  "idempotentReplay": false
+}
 HTTP 201
 ```
 
@@ -308,7 +315,12 @@ bet "$BET"
 ```
 
 ```
-{"transactionId":"be935f1f-15ad-4d95-82d4-65734d8d10b5","status":"PROCESSED","balance":{"amount":"75.00","currency":"BRL"},"idempotentReplay":true}
+{
+  "transactionId": "be935f1f-15ad-4d95-82d4-65734d8d10b5",
+  "status": "PROCESSED",
+  "balance": { "amount": "75.00", "currency": "BRL" },
+  "idempotentReplay": true
+}
 HTTP 201
 ```
 
@@ -319,7 +331,10 @@ bet "${BET/25.00/30.00}"
 ```
 
 ```
-{"code":"IDEMPOTENCY_CONFLICT","message":"Conflito de idempotência: a chave ou a identidade do provedor já pertence a outro payload"}
+{
+  "code": "IDEMPOTENCY_CONFLICT",
+  "message": "Conflito de idempotência: a chave ou a identidade do provedor já pertence a outro payload"
+}
 HTTP 409
 ```
 
@@ -332,7 +347,22 @@ curl -s -w '\nHTTP %{http_code}\n' $BASE/wagering/transactions/$TX_ID
 ```
 
 ```
-{"transactionId":"be935f1f-15ad-4d95-82d4-65734d8d10b5","providerId":"provider-a","externalTransactionId":"bet-001","walletId":"949a4d2c-dead-453f-b4c3-36fbbac881bf","playerId":"3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d","roundId":"round-1","gameId":"game-1","kind":"BET","money":{"amount":"25.00","currency":"BRL"},"status":"PROCESSED","failureCode":null,"balance":{"amount":"75.00","currency":"BRL"},"createdAt":"2026-11-25T18:54:35.024Z","processedAt":"2026-11-25T18:54:35.024Z"}
+{
+  "transactionId": "be935f1f-15ad-4d95-82d4-65734d8d10b5",
+  "providerId": "provider-a",
+  "externalTransactionId": "bet-001",
+  "walletId": "949a4d2c-dead-453f-b4c3-36fbbac881bf",
+  "playerId": "3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d",
+  "roundId": "round-1",
+  "gameId": "game-1",
+  "kind": "BET",
+  "money": { "amount": "25.00", "currency": "BRL" },
+  "status": "PROCESSED",
+  "failureCode": null,
+  "balance": { "amount": "75.00", "currency": "BRL" },
+  "createdAt": "2026-11-25T18:54:35.024Z",
+  "processedAt": "2026-11-25T18:54:35.024Z"
+}
 HTTP 200
 ```
 
@@ -342,10 +372,7 @@ Também pela identidade no provedor:
 curl -s -w '\nHTTP %{http_code}\n' $BASE/providers/provider-a/wagering/transactions/bet-001
 ```
 
-```
-{"transactionId":"be935f1f-15ad-4d95-82d4-65734d8d10b5","providerId":"provider-a","externalTransactionId":"bet-001","walletId":"949a4d2c-dead-453f-b4c3-36fbbac881bf","playerId":"3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d","roundId":"round-1","gameId":"game-1","kind":"BET","money":{"amount":"25.00","currency":"BRL"},"status":"PROCESSED","failureCode":null,"balance":{"amount":"75.00","currency":"BRL"},"createdAt":"2026-11-25T18:54:35.024Z","processedAt":"2026-11-25T18:54:35.024Z"}
-HTTP 200
-```
+A resposta é idêntica à anterior, também com `HTTP 200`.
 
 ### Ledger
 
@@ -356,7 +383,29 @@ curl -s -w '\nHTTP %{http_code}\n' "$BASE/wallets/$WALLET_ID/ledger?limit=10"
 ```
 
 ```
-{"items":[{"id":"3f3adf0b-907b-44ae-816e-c72e7f4f6f54","transactionId":"27d21faf-2b62-43df-b1aa-bce362445137","direction":"CREDIT","money":{"amount":"100.00","currency":"BRL"},"balanceBefore":{"amount":"0.00","currency":"BRL"},"balanceAfter":{"amount":"100.00","currency":"BRL"},"createdAt":"2026-11-25T18:54:34.481Z"},{"id":"42dd2c0e-176e-40fe-a588-0853437be2eb","transactionId":"be935f1f-15ad-4d95-82d4-65734d8d10b5","direction":"DEBIT","money":{"amount":"25.00","currency":"BRL"},"balanceBefore":{"amount":"100.00","currency":"BRL"},"balanceAfter":{"amount":"75.00","currency":"BRL"},"createdAt":"2026-11-25T18:54:35.024Z"}],"nextCursor":null}
+{
+  "items": [
+    {
+      "id": "3f3adf0b-907b-44ae-816e-c72e7f4f6f54",
+      "transactionId": "27d21faf-2b62-43df-b1aa-bce362445137",
+      "direction": "CREDIT",
+      "money": { "amount": "100.00", "currency": "BRL" },
+      "balanceBefore": { "amount": "0.00", "currency": "BRL" },
+      "balanceAfter": { "amount": "100.00", "currency": "BRL" },
+      "createdAt": "2026-11-25T18:54:34.481Z"
+    },
+    {
+      "id": "42dd2c0e-176e-40fe-a588-0853437be2eb",
+      "transactionId": "be935f1f-15ad-4d95-82d4-65734d8d10b5",
+      "direction": "DEBIT",
+      "money": { "amount": "25.00", "currency": "BRL" },
+      "balanceBefore": { "amount": "100.00", "currency": "BRL" },
+      "balanceAfter": { "amount": "75.00", "currency": "BRL" },
+      "createdAt": "2026-11-25T18:54:35.024Z"
+    }
+  ],
+  "nextCursor": null
+}
 HTTP 200
 ```
 
@@ -367,7 +416,14 @@ curl -s -w '\nHTTP %{http_code}\n' -X POST $BASE/wallets/$WALLET_ID/reconciliati
 ```
 
 ```
-{"walletId":"949a4d2c-dead-453f-b4c3-36fbbac881bf","storedBalance":{"amount":"75.00","currency":"BRL"},"calculatedBalance":{"amount":"75.00","currency":"BRL"},"difference":{"amount":"0.00","currency":"BRL"},"consistent":true,"checkedEntries":2}
+{
+  "walletId": "949a4d2c-dead-453f-b4c3-36fbbac881bf",
+  "storedBalance": { "amount": "75.00", "currency": "BRL" },
+  "calculatedBalance": { "amount": "75.00", "currency": "BRL" },
+  "difference": { "amount": "0.00", "currency": "BRL" },
+  "consistent": true,
+  "checkedEntries": 2
+}
 HTTP 200
 ```
 
@@ -379,9 +435,12 @@ curl -s -w '\nHTTP %{http_code}\n' $BASE/health/ready
 ```
 
 ```
-{"status":"ok"}
+{ "status": "ok" }
 HTTP 200
-{"status":"ok","checks":{"postgres":"up","sqs":"up"}}
+{
+  "status": "ok",
+  "checks": { "postgres": "up", "sqs": "up" }
+}
 HTTP 200
 ```
 
@@ -395,7 +454,10 @@ bun run scripts/send-wager-message.ts --wallet-id $WALLET_ID --player-id $PLAYER
 ```
 
 ```
-{"messageId":"c383e2f7-d984-4a40-a052-780e2643c966","externalTransactionId":"win-001"}
+{
+  "messageId": "c383e2f7-d984-4a40-a052-780e2643c966",
+  "externalTransactionId": "win-001"
+}
 ```
 
 O processamento é assíncrono; alguns segundos depois:
@@ -406,9 +468,29 @@ curl -s -w '\nHTTP %{http_code}\n' $BASE/wallets/$WALLET_ID
 ```
 
 ```
-{"transactionId":"d1a99407-d56b-4367-a512-5ad1981ac858","providerId":"provider-a","externalTransactionId":"win-001","walletId":"949a4d2c-dead-453f-b4c3-36fbbac881bf","playerId":"3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d","roundId":"round-1","gameId":"game-1","kind":"WIN","money":{"amount":"40.00","currency":"BRL"},"status":"PROCESSED","failureCode":null,"balance":{"amount":"115.00","currency":"BRL"},"createdAt":"2026-11-25T18:54:36.458Z","processedAt":"2026-11-25T18:54:36.458Z"}
+{
+  "transactionId": "d1a99407-d56b-4367-a512-5ad1981ac858",
+  "providerId": "provider-a",
+  "externalTransactionId": "win-001",
+  "walletId": "949a4d2c-dead-453f-b4c3-36fbbac881bf",
+  "playerId": "3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d",
+  "roundId": "round-1",
+  "gameId": "game-1",
+  "kind": "WIN",
+  "money": { "amount": "40.00", "currency": "BRL" },
+  "status": "PROCESSED",
+  "failureCode": null,
+  "balance": { "amount": "115.00", "currency": "BRL" },
+  "createdAt": "2026-11-25T18:54:36.458Z",
+  "processedAt": "2026-11-25T18:54:36.458Z"
+}
 HTTP 200
-{"id":"949a4d2c-dead-453f-b4c3-36fbbac881bf","playerId":"3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d","balance":{"amount":"115.00","currency":"BRL"},"version":3}
+{
+  "id": "949a4d2c-dead-453f-b4c3-36fbbac881bf",
+  "playerId": "3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d",
+  "balance": { "amount": "115.00", "currency": "BRL" },
+  "version": 3
+}
 HTTP 200
 ```
 
