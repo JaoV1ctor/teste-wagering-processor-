@@ -44,13 +44,16 @@ export function buildWagerMessage(input: WagerMessageInput, now: Date = new Date
   };
 }
 
-/** `MessageGroupId = walletId` (ordem por wallet) e `MessageDeduplicationId = messageId`. Otimização: a garantia continua no banco. */
+/**
+ * `MessageGroupId = walletId` em minúsculas (ordem por wallet: a fila distingue caixa, o UUID não) e `MessageDeduplicationId = messageId`.
+ * Otimização: a garantia continua no banco.
+ */
 export async function sendWagerMessage(client: SQSClient, queueUrl: string, message: WagerTransactionRequested): Promise<void> {
   await client.send(
     new SendMessageCommand({
       QueueUrl: queueUrl,
       MessageBody: JSON.stringify(message),
-      MessageGroupId: message.data.walletId,
+      MessageGroupId: message.data.walletId.toLowerCase(),
       MessageDeduplicationId: message.messageId,
     }),
   );
