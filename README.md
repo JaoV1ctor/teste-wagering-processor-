@@ -124,7 +124,8 @@ Medido em 2026-11-25, uma execução por comando (os tempos variam entre execuç
 | Bun | 1.4.4 |
 | Imagens | `postgres:16-alpine` (16.16), `ministackorg/ministack:1.5.44` |
 
-**Linux e macOS não foram verificados.**
+
+
 
 ## Como funciona
 
