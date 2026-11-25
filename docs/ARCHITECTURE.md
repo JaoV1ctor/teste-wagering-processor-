@@ -276,7 +276,7 @@ Na falha, o teste imprime a semente, o comando e a menor sequência que encontro
 | Proteção retirada | Resultado |
 | --- | --- |
 | Índice `wt_one_effective_reversal_uq` e a conferência de reversão já feita na aplicação (juntos, porque um cobre o outro) | Sequencial, semente `101`: segunda reversão `PROCESSED`; reduzida a 4 operações, idêntica em duas execuções. Concorrente, nas três sementes: invariante "mais de uma reversão efetiva", reduzida a 4 operações |
-| `FOR NO KEY UPDATE` da wallet | Concorrente, semente `101`: mensagem na DLQ com `UNEXPECTED_ERROR` (a cadeia do ledger no schema recusa a escrita perdida); reduzida a 15 operações |
+| `FOR NO KEY UPDATE` da wallet | Concorrente, semente `101`: mensagem na DLQ com `UNEXPECTED_ERROR`; reduzida a 15 operações |
 
 **Defeito encontrado por este teste (corrigido).** Semente `202`, reduzida a 3 operações: wallet em BRL, `BET` em USD, replay. O replay (e as consultas) de uma transação rejeitada por moeda devolvia o saldo da wallet rotulado com a moeda do pedido. Nenhum saldo gravado era afetado. Teste fixo: `test/integration/wagering-http.test.ts`.
 
