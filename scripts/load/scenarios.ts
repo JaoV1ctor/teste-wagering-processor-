@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { SendMessageBatchCommand, type SQSClient } from '@aws-sdk/client-sqs';
 import { buildWagerMessage } from '../send-wager-message';
-import { idempotencyKeyOf, openWallet, submit, type SubmitOutcome, type WagerPayload, type Wallet } from './client';
+import { idempotencyKeyOf, LOAD_PROVIDER, openWallet, submit, type SubmitOutcome, type WagerPayload, type Wallet } from './client';
 import type { LoadConfig, ScenarioId } from './config';
 import { type Check, checkInvariants, type InvariantReport } from './invariants';
 import { count, type Counters, difference, drainOutbox, type OutboxStats, outboxStats, readCounters, waitUntil } from './measure';
@@ -82,7 +82,7 @@ const openWallets = (url: string, howMany: number): Promise<Wallet[]> =>
 
 function wagerPayload(wallet: Wallet, kind: PlannedKind, externalTransactionId: string): WagerPayload {
   return {
-    providerId: 'load', externalTransactionId, ...wallet, roundId: 'round-1', gameId: 'game-1', kind, money: { amount: AMOUNT[kind], currency: 'BRL' },
+    providerId: LOAD_PROVIDER, externalTransactionId, ...wallet, roundId: 'round-1', gameId: 'game-1', kind, money: { amount: AMOUNT[kind], currency: 'BRL' },
   };
 }
 
@@ -209,7 +209,8 @@ async function httpScenario(context: Context, id: 'A' | 'B' | 'D', title: string
       progress(`${id}: conferindo invariantes`);
       const extra: Check[] = id === 'D' ? [{ name: 'chaves com respostas incoerentes (mais de um original ou transações diferentes)', observed: anomalies, expected: 0 }] : [];
       const invariants = await checkInvariants({
-        pool: stack.database.pool, apiUrl: instances.urls[0]!, client: context.client, eventsQueueUrl: stack.queues.events.url, acceptedKeys: accepted, extra,
+        pool: stack.database.pool, apiUrl: instances.urls[0]!, client: context.client, eventsQueueUrl: stack.queues.events.url,
+        providerId: LOAD_PROVIDER, acceptedKeys: accepted, extra,
       });
       return { id, title, repetitions, invariants };
     } finally {
@@ -317,7 +318,7 @@ async function queueScenario(context: Context, title: string): Promise<ScenarioR
     try {
       const messages = await count(pool, 'select 1 from inbox_messages');
       const invariants = await checkInvariants({
-        pool, apiUrl: check.urls[0]!, client, eventsQueueUrl: stack.queues.events.url, acceptedKeys: accepted,
+        pool, apiUrl: check.urls[0]!, client, eventsQueueUrl: stack.queues.events.url, providerId: LOAD_PROVIDER, acceptedKeys: accepted,
         extra: [{ name: 'mensagens registradas no inbox (uma por enviada)', observed: messages, expected: accepted.size }],
       });
       return { id: 'C' as const, title, repetitions, invariants };

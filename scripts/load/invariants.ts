@@ -83,13 +83,14 @@ export interface InvariantInput {
   apiUrl: string;
   client: SQSClient;
   eventsQueueUrl: string;
-  /** Chaves de idempotência que a carga viu aceitas (cada uma precisa existir exatamente uma vez). */
+  /** Chaves de idempotência que a carga viu aceitas, todas do provedor `providerId` (cada uma precisa existir exatamente uma vez). */
+  providerId: string;
   acceptedKeys: ReadonlySet<string>;
   /** Verificações próprias do cenário. */
   extra?: Check[];
 }
 
-export async function checkInvariants({ pool, apiUrl, client, eventsQueueUrl, acceptedKeys, extra = [] }: InvariantInput): Promise<InvariantReport> {
+export async function checkInvariants({ pool, apiUrl, client, eventsQueueUrl, providerId, acceptedKeys, extra = [] }: InvariantInput): Promise<InvariantReport> {
   const { rows: wallets } = await pool.query<{ id: string }>('select id from wallets');
   const reconciliations = await runPool(8, wallets.map((wallet) => () => reconcile(apiUrl, wallet.id)));
 
@@ -107,7 +108,8 @@ export async function checkInvariants({ pool, apiUrl, client, eventsQueueUrl, ac
        having w.balance <> coalesce(sum(case l.direction when 'CREDIT' then l.amount else -l.amount end), 0)`),
     await zero('saldos negativos (wallet ou lançamento)',
       'select 1 from wallets where balance < 0 union all select 1 from wallet_ledger_entries where balance_after < 0 or balance_before < 0'),
-    await zero('chaves de idempotência com mais de uma transação', 'select idempotency_key from wager_transactions group by 1 having count(*) > 1'),
+    await zero('chaves de idempotência com mais de uma transação no mesmo provedor',
+      'select provider_id, idempotency_key from wager_transactions group by 1, 2 having count(*) > 1'),
     await zero('identidades (provedor, id externo) repetidas',
       'select provider_id, external_transaction_id from wager_transactions group by 1, 2 having count(*) > 1'),
     await zero('transações com mais de um lançamento', 'select transaction_id from wallet_ledger_entries group by 1 having count(*) > 1'),
@@ -118,7 +120,8 @@ export async function checkInvariants({ pool, apiUrl, client, eventsQueueUrl, ac
       `select l.id from wallet_ledger_entries l join wager_transactions t on t.id = l.transaction_id where t.status <> 'PROCESSED' or t.kind = 'LOSS'`),
     {
       name: 'chaves aceitas que não estão gravadas',
-      observed: acceptedKeys.size - (await count(pool, 'select 1 from wager_transactions where idempotency_key = any($1)', [[...acceptedKeys]])),
+      observed: acceptedKeys.size -
+        (await count(pool, 'select 1 from wager_transactions where provider_id = $1 and idempotency_key = any($2)', [providerId, [...acceptedKeys]])),
       expected: 0,
     },
     { name: 'eventos do outbox que não chegaram à fila', observed: [...outboxIds].filter((id) => !consumed.unique.has(id)).length, expected: 0 },

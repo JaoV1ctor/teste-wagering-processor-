@@ -6,6 +6,9 @@ export interface Wallet {
   playerId: string;
 }
 
+/** Único provedor da carga: as chaves aceitas são conferidas dentro dele. */
+export const LOAD_PROVIDER = 'load';
+
 export interface WagerPayload {
   providerId: string;
   externalTransactionId: string;
