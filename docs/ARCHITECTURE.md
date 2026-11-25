@@ -72,7 +72,7 @@ Os testes de integração e de concorrência usam Postgres e MiniStack reais. A 
 
 | Comando | Cobre | Resultado |
 | --- | --- | --- |
-| `bun run check` | tipos, lint e testes de unidade | 498 testes em 36 arquivos, 0 falhas |
+| `bun run check` | tipos, lint e testes de unidade | 509 testes em 37 arquivos, 0 falhas |
 | `bun run test:integration` | Postgres e MiniStack reais | 454 testes em 43 arquivos, 0 falhas |
 | `bun run test:concurrency` | paralelismo e processos reais | 32 testes em 9 arquivos, 0 falhas |
 
@@ -438,6 +438,8 @@ migration reversível do schema e testes do schema contra Postgres real.
 
 **1. Emulador de AWS: `ministackorg/ministack:1.5.44`.** Licença MIT (label OCI da imagem), sem conta nem token, tag fixa; o repositório declarado pela imagem é `github.com/ministackorg/ministack`.
 O enunciado aceita LocalStack ou MiniStack; descartamos o LocalStack porque passou a exigir conta e token em 23/03/2026.
+
+**Partida a frio.** O healthcheck do MiniStack no `docker-compose.yml` prova só que a porta 4566 aceita conexão (`bash` e `/dev/tcp`: a imagem não tem `curl` nem `wget`). Como porta aberta não garante API pronta, `bun run infra:queues` repete a cada 500 ms, por até 30 s, enquanto o erro for de indisponibilidade (conexão recusada ou encerrada, tentativa sem resposta ou `503`); outros erros falham na hora (`test/unit/create-queues.test.ts`). Alternativa não adotada: ficar só com o `HEALTHCHECK` declarado pela imagem, que consulta `/_ministack/health` por HTTP e é mais exigente; o do compose o substitui, fica visível no repositório e confere a cada 3 s em vez de 10 s. Nas 6 partidas a frio feitas com `--wait` antes da mudança, a falha não se reproduziu.
 
 **2. TypeScript 6.0.3, não 7.0.2.** O npm oferece o 7.0.2, mas `typescript-eslint` 8.74.0 declara `typescript >=4.8.4 <6.1.0`.
 Para lint e `tsc` usarem a mesma versão, ficamos no 6.0.3. Reavaliar quando o `typescript-eslint` suportar o 7.
