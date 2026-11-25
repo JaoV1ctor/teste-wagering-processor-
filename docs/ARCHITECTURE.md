@@ -242,8 +242,8 @@ Cada item da lista de testes obrigatórios do enunciado e onde ele é provado. N
 
 #### Invariante final
 
-`wallet.balance == saldo reconstruído pelo ledger`: conferida wallet a wallet nos testes que movem saldo (`ledgerBalance` em `test/support/db.ts` e `expectEventsConsistentWithLedger` em `test/support/events.ts`).
-Os arquivos de integração que moviam saldo sem essa conferência exigem, ao encerrar, que nenhuma wallet do banco de testes esteja divergente (`divergentWallets`).
+`wallet.balance == saldo reconstruído pelo ledger`: conferida wallet a wallet nos testes de concorrência e nos de integração que verificam saldo (`ledgerBalance` em `test/support/db.ts` e `expectEventsConsistentWithLedger` em `test/support/events.ts`).
+Os arquivos de integração que moviam saldo sem essa conferência exigem, ao encerrar, que nenhuma wallet do banco de testes esteja divergente (`divergentWallets`, em `test/support/db.ts`).
 
 #### Como ler estas provas
 
