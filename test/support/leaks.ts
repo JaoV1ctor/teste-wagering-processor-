@@ -23,13 +23,22 @@ export function leaksIn(text: string): string[] {
  * `details[].message` de um `VALIDATION_ERROR`. O resto do corpo é examinado como veio.
  */
 export function leaksInReply(text: string, sent?: string): string[] {
-  const body = sent === undefined ? undefined : parseJson(text);
-  if (!isValidationError(body)) return leaksIn(text);
-  const details = body.details.map((detail) =>
-    isRecord(detail) && typeof detail['message'] === 'string'
-      ? { ...detail, message: detail['message'].replaceAll(`"${sent}"`, '"(eco)"') }
-      : detail);
-  return leaksIn(JSON.stringify({ ...body, details }));
+  return leaksIn(sent === undefined ? text : withoutEcho(text, sent));
+}
+
+/**
+ * O texto recebido sem o eco autorizado. A troca é feita no próprio texto, e não em um JSON reconstruído, que perderia o que veio sob chave
+ * repetida. Cada detalhe troca uma única ocorrência da sua mensagem: qualquer cópia a mais continua à vista.
+ */
+function withoutEcho(text: string, sent: string): string {
+  const body = parseJson(text);
+  if (!isValidationError(body)) return text;
+  return body.details.reduce<string>((raw, detail) => {
+    if (!isRecord(detail) || typeof detail['message'] !== 'string') return raw;
+    const clean = JSON.stringify(detail['message'].replaceAll(`"${sent}"`, '"(eco)"'));
+    // Por função: um `$&` na mensagem não é interpretado pelo `replace`.
+    return raw.replace(JSON.stringify(detail['message']), () => clean);
+  }, text);
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;

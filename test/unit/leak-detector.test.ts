@@ -41,6 +41,21 @@ describe('vazamento proposital é apontado', () => {
     expect(leaksInReply(validation('Valor inválido', { debug: SECRET_CANARY }), 'sec')).toContain('string de conexão ou credencial');
   });
 
+  // O `JSON.parse` fica só com a última das chaves repetidas: o que veio na primeira só existe no texto recebido.
+  test.each([
+    ['campo repetido', `{"code":"VALIDATION_ERROR","details":[],"debug":"${SECRET_CANARY}","debug":"ok"}`],
+    ['message repetida no detalhe', `{"code":"VALIDATION_ERROR","details":[{"message":"${SECRET_CANARY}","message":"ok"}]}`],
+    ['details repetido', `{"code":"VALIDATION_ERROR","details":[{"message":"${SECRET_CANARY}"}],"details":[]}`],
+  ])('segredo escondido por chave JSON repetida: %s', (_label, text) => {
+    expect(leaksInReply(text, 'x')).toContain('string de conexão ou credencial');
+  });
+
+  test('cópia da mensagem com eco sob chave repetida não é descontada junto', () => {
+    const message = JSON.stringify(echo(SQL));
+    const text = `{"code":"VALIDATION_ERROR","debug":${message},"debug":"ok","details":[{"message":${message}}]}`;
+    expect(leaksInReply(text, SQL)).toContain('SQL');
+  });
+
   test('o valor enviado repetido FORA de details[].message não é descontado', () => {
     const sent = 'select 1 from wallets';
     expect(leaksInReply(JSON.stringify({ code: 'INTERNAL_ERROR', message: `Erro na consulta: ${sent}` }), sent)).toContain('SQL');
@@ -57,6 +72,13 @@ describe('controle negativo: resposta limpa não é apontada', () => {
     "'; DROP TABLE wallets;--", 'select 1 from wallets', 'postgres://wager:wager@db/wager', 'a"b\\c\nat x (', '', ' ',
   ])('eco da entrada na mensagem de validação: %j', (sent) => {
     expect(leaksInReply(validation(echo(sent)), sent)).toEqual([]);
+  });
+
+  test('o mesmo eco em dois detalhes', () => {
+    const sent = "select 1 from wallets $& $'";
+    const message = echo(sent);
+    const text = JSON.stringify({ code: 'VALIDATION_ERROR', details: [{ message }, { message }] });
+    expect(leaksInReply(text, sent)).toEqual([]);
   });
 
   test('o eco real da API (valor e moeda) é descontado; sem declarar o valor enviado, é apontado', () => {
