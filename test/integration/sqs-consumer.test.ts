@@ -120,7 +120,7 @@ describe('consumo básico', () => {
 });
 
 describe('duplicação e redelivery', () => {
-  test('mesma messageId entregue duas vezes com o mesmo corpo: um débito, a 2ª é replay', async () => {
+  test('mesma messageId entregue duas vezes com o mesmo corpo: um débito, a 2ª é duplicata do inbox', async () => {
     const queues = await newQueues(client);
     const wallet = await newWallet();
     await withConsumer({ queues }, async ({ processor }) => {
@@ -133,7 +133,8 @@ describe('duplicação e redelivery', () => {
 
       expect(await ledgerBalance(probe, wallet.id)).toEqual({ stored: '75.00', rebuilt: '75.00', entries: 2 });
       expect(await transactionRows(message.data.externalTransactionId)).toHaveLength(1);
-      expect(processor.outcomes.map((o) => ('idempotentReplay' in o ? o.idempotentReplay : 'erro'))).toEqual([false, true]);
+      expect(processor.outcomes[0]).toMatchObject({ idempotentReplay: false });
+      expect(processor.outcomes[1]).toEqual({ duplicateMessage: true });
     });
   });
 
@@ -485,7 +486,7 @@ describe('shutdown (SIGTERM)', () => {
       await holder.query('ROLLBACK');
       holder.release();
     }
-    // A que estava em voo termina depois de liberado o lock: o commit é válido e a reentrega seria um replay.
+    // A que estava em voo termina depois de liberado o lock: o commit é válido (a reentrega seria uma duplicata do inbox).
     await waitFor('em andamento concluiu', async () => (await transactionRows(sent[0] ?? '')).length === 1);
     expect(await ledgerBalance(probe, wallet.id)).toEqual({ stored: '90.00', rebuilt: '90.00', entries: 2 });
   });

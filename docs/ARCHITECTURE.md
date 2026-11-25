@@ -230,6 +230,7 @@ Um único `ProcessWagerTransactionUseCase` concentra a regra; o controller só t
 1. payloadHash = SHA-256 do JSON canônico dos campos de negócio
 2. Fast-path SEM lock: SELECT por idempotency_key
      existe: mesmo hash -> REPLAY (mesmo status HTTP e corpo, idempotentReplay=true) | hash diferente -> 409 IDEMPOTENCY_CONFLICT
+     (entrada SQS: o replay ainda passa pelo inbox numa transação curta, ver "Fase 4")
 3. BEGIN
 4. lockWallet:  SELECT id FROM wallets WHERE id = ? FOR NO KEY UPDATE     <- primeira instrução que toca a wallet
      inexistente -> ROLLBACK, 404 WALLET_NOT_FOUND, nada gravado
@@ -475,12 +476,13 @@ ReceiveMessage (long polling 20 s, lote <= 10, VisibilityTimeout configurável)
        └─ WagerMessageHandler.handle(body, ApproximateReceiveCount)
             1. parseWagerMessage (zod): envelope + data. type desconhecido ou payload inválido => erro PERMANENTE
             2. ProcessWagerTransactionUseCase.execute(command, { consumerName, messageId })
-                 fast-path por idempotencyKey (sem lock) -> replay
+                 fast-path por idempotencyKey (sem lock): a chave já existe?
                  BEGIN
-                   INSERT inbox (consumer_name, message_id) ON CONFLICT DO NOTHING   <- mesma transação do dinheiro
+                   INSERT inbox (consumer_name, message_id, payload_hash) ON CONFLICT DO NOTHING   <- mesma transação do efeito
                      já existe, mesmo hash  => COMMIT, resultado `duplicateMessage`
                      já existe, hash outro  => InboxPayloadConflictError (permanente)
-                   lock da wallet -> transação -> saldo -> ledger        (ordem de locks da Fase 2, inalterada)
+                   chave já existia  => replay (hash diferente => IdempotencyConflictError e ROLLBACK). NÃO trava a wallet
+                   chave nova        => lock da wallet -> transação -> saldo -> ledger -> outbox   (ordem de locks da Fase 2)
                    UPDATE inbox.processed_at
                  COMMIT
             3. devolve uma Disposition: ack | retry(delaySeconds) | dead-letter(reason)
@@ -521,10 +523,21 @@ Códigos de `FailureReason`: `MALFORMED_MESSAGE`, `UNKNOWN_MESSAGE_TYPE`, `INBOX
 
 ### Inbox e idempotência são camadas diferentes
 
-O fast-path por `idempotencyKey` roda antes do `BEGIN` (SPEC §6 passo 1), então uma redelivery depois do commit normalmente vira **replay** sem tocar o inbox.
-O inbox é o que decide quando a chave de idempotência **não** acerta: mesma mensagem reenviada com outra chave, conteúdo diferente sob o mesmo `messageId`, ou duas entregas concorrentes
-(o `INSERT ... ON CONFLICT` espera o commit da primeira). Em outras palavras: remover o inbox **não** duplica o débito (a idempotência segura), mas quebra a deduplicação por mensagem, a detecção de
-`messageId` reutilizado e a atomicidade inbox + transação; os testes pegam isso (controle negativo abaixo). `processed_at` é gravado por `UPDATE` no fim da mesma transação.
+A idempotência decide **o que acontece com o dinheiro** (uma transação por chave); o inbox decide **o que significa uma `messageId`** (um único conteúdo por consumidor).
+Toda mensagem confirmada por resultado do caso de uso (`PROCESSED`, `REJECTED`, `PENDING_REFERENCE`, replay ou duplicata) tem a sua linha `(consumerName, messageId, payload_hash)` no inbox,
+**inclusive quando a chave já era conhecida** (por exemplo, a mesma aposta aceita antes pelo HTTP). Consequências:
+
+| Entrega | Resultado |
+| --- | --- |
+| Mesma `messageId`, mesmo conteúdo (redelivery depois do commit) | duplicata do inbox: ack |
+| `messageId` nova, chave conhecida, mesmo conteúdo | replay: ack, e a nova `messageId` passa a constar no inbox |
+| `messageId` já registrada, outro conteúdo (chave nova **ou** conhecida) | `INBOX_PAYLOAD_CONFLICT`: DLQ, nada é debitado |
+| `messageId` nova, chave conhecida, outro conteúdo | `IDEMPOTENCY_CONFLICT`: DLQ, nada gravado (nem a linha do inbox) |
+
+**Correção após revisão independente.** O fast-path devolvia o replay **antes** de registrar a mensagem. Um `messageId` visto só em replay ficava fora do inbox e podia voltar com outra chave e outra transação,
+que era processada (reproduzido em teste: um segundo débito sob a mesma `messageId`). Agora o replay por mensagem abre uma transação curta só com `INSERT` e `UPDATE` do inbox: **sem lock de wallet**
+(há teste com o lock da wallet preso por outra conexão), e a ordem de locks não muda. O custo é uma transação a mais por replay vindo do SQS; o replay HTTP continua sem escrever nada.
+`processed_at` é gravado por `UPDATE` no fim da mesma transação. Entregas simultâneas da mesma mensagem se serializam no índice único (`ON CONFLICT` espera o commit da primeira).
 
 ### Concorrência dentro do processo
 
@@ -537,7 +550,7 @@ quem garante é o lock da wallet + inbox + idempotência no banco. Nenhum estado
 `main.ts` chama `enableShutdownHooks()`; `AppModule.beforeApplicationShutdown` executa `Promise.all([consumer.stop(), worker.stop()])` e só depois `onApplicationShutdown` fecha o ORM.
 `QueueConsumer.stop()`: (1) aborta o long polling e para de buscar; (2) devolve **na hora**, com `ChangeMessageVisibility(0)`, as mensagens que ainda esperavam a vez do grupo;
 (3) espera as em andamento até `SHUTDOWN_TIMEOUT_MS` (25 s); (4) as que não terminaram voltam com `ChangeMessageVisibility(0)`. Mensagem devolvida que ainda termina em segundo plano não é confirmada:
-se commitar, a reentrega será replay ou duplicata do inbox. `stop()` é idempotente.
+se commitar, a reentrega será duplicata do inbox. `stop()` é idempotente.
 
 ### Configuração (sem valor mágico no código)
 
@@ -557,8 +570,8 @@ Além disso, o cenário "morre antes do commit" usa um **processo filho real** m
 | Camada | Arquivos | O que prova |
 | --- | --- | --- |
 | Unidade | `inbox-message`, `wager-message` (zod), `visibility-backoff`, `wager-message-handler`, `consumer-config`, `app-shutdown` | Domínio do inbox; cada caso de payload malformado; backoff e teto; classificação ack/retry/DLQ; validação da config; ordem do encerramento |
-| Integração (Postgres + MiniStack reais) | `process-wager-inbox`, `sqs-consumer`, `sqs-app`, `send-wager-message-cli` | Inbox na mesma transação (atomicidade com falha injetada em 4 pontos, 20 entregas simultâneas); ack só após o commit; `REJECTED` com ack; duplicata, redelivery com `messageId` novo, ordem por wallet; Postgres fora (sem ack, backoff 1 s, 2 s) e 5 recebimentos até a DLQ com `MessageGroupId`; payloads inválidos, conflito e wallet inexistente na DLQ com `FailureReason`; paralelismo entre grupos com limite e serialização do grupo; shutdown devolvendo em andamento e não iniciadas; `AppModule` real; CLI produtor |
-| Concorrência | `test/concurrency/sqs-consumer.test.ts` | **#5** (ack falha depois do commit: reentrega vira replay, 1 débito, 1 inbox, ledger íntegro; também com 4 wallets); **#5b** (processo morto por `SIGKILL` antes do commit: 0 efeitos, reentrega processa 1 vez); 2 consumidores com pools próprios disputando 144 mensagens (48 fatos, duplicatas e reenvios): exatamente 48 processamentos; wallet quente com 2 consumidores: 5 `PROCESSED` e 3 `REJECTED` na ordem de envio |
+| Integração (Postgres + MiniStack reais) | `process-wager-inbox`, `sqs-replay-inbox`, `sqs-consumer`, `sqs-app`, `send-wager-message-cli` | Inbox na mesma transação (atomicidade com falha injetada em 4 pontos, 20 entregas simultâneas); replay por mensagem registra o inbox sem travar a wallet; HTTP, depois replay por SQS, depois a mesma `messageId` com outro conteúdo vai à DLQ sem debitar; ack só após o commit; `REJECTED` com ack; duplicata, redelivery com `messageId` novo, ordem por wallet; Postgres fora (sem ack, backoff 1 s, 2 s) e 5 recebimentos até a DLQ com `MessageGroupId`; payloads inválidos, conflito e wallet inexistente na DLQ com `FailureReason`; paralelismo entre grupos com limite e serialização do grupo; shutdown devolvendo em andamento e não iniciadas; `AppModule` real; CLI produtor |
+| Concorrência | `test/concurrency/sqs-consumer.test.ts` | **#5** (ack falha depois do commit: a reentrega é duplicata do inbox, 1 débito, 1 inbox, ledger íntegro; também com 4 wallets); **#5b** (processo morto por `SIGKILL` antes do commit: 0 efeitos, reentrega processa 1 vez); 2 consumidores com pools próprios disputando 144 mensagens (48 fatos, duplicatas e reenvios): exatamente 48 processamentos; wallet quente com 2 consumidores: 5 `PROCESSED` e 3 `REJECTED` na ordem de envio |
 
 Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) em todos os testes que movem saldo.
 
@@ -567,10 +580,13 @@ Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) em todos 
 | Mutação | Resultado |
 | --- | --- |
 | `acknowledge` antes de `handle` (ack antes do commit) | Falham `ack SOMENTE depois do commit` (a transação ainda não existia no instante do ack) e **#5b** (a mensagem é apagada, o processo morre antes do commit e nada é reprocessado); falham também os testes que dependem da mensagem permanecer na fila até o commit |
-| Sem inbox (`origin` ignorado no caso de uso) | Falham 14 testes: inbox gravado, duplicata pelo inbox, `messageId` reutilizado, atomicidade do inbox, 20 entregas simultâneas, #5 (linha do inbox). **Nenhum teste mostra débito duplicado**, porque a idempotência por chave segura o dinheiro sozinha: é a defesa em profundidade que a SPEC descreve |
+| Sem inbox (`origin` ignorado no caso de uso) | Falham 23 testes de integração e concorrência: inbox gravado, duplicata pelo inbox, `messageId` reutilizado, atomicidade do inbox, 20 entregas simultâneas, #5. A mesma **chave** continua sem débito duplicado (a idempotência segura sozinha), mas uma `messageId` reutilizada com **outra** transação passa a ser processada |
+| Replay volta a retornar antes do inbox (código anterior à correção) | Falham 10 testes: `sqs-replay-inbox` (a `messageId` reutilizada debita de novo), registro do inbox no replay e a redelivery reconhecida como duplicata (#5) |
 
 ### Limitações e o que o MiniStack não garante frente ao SQS real
 
+- **Mensagem que vai à DLQ não fica no inbox.** O inbox é gravado na transação do processamento, e a falha permanente (wallet inexistente, conflito de idempotência) faz `ROLLBACK`. A mesma `messageId` enviada depois com conteúdo válido é processada; o rastro da primeira é a DLQ, não o inbox.
+- **Sem retenção do inbox**: `inbox_messages` só cresce.
 - **Long polling abortado ainda vive no servidor.** No shutdown abortamos o `ReceiveMessage` no cliente, mas a espera continua do lado do servidor (observado no MiniStack; é plausível que o SQS real se comporte igual, mas isso não foi verificado): uma mensagem que chegue nesses segundos pode ficar invisível até `VisibilityTimeout` vencer e depois é reentregue. Não se perde nem se duplica efeito; só atrasa.
 - **Contadores de fila.** Os testes esperam "fila vazia" por `ApproximateNumberOfMessages` / `NotVisible`. No SQS real esses contadores são aproximados e atrasados; o MiniStack os atualiza de forma imediata. Os testes não valem como estão contra a AWS.
 - **Não verificado no MiniStack:** janela de 5 minutos da deduplicação FIFO (a DLQ confia nela para não duplicar o envio quando o worker morre entre o `SendMessage` e o ack); invalidação de `ReceiptHandle` antigo depois de nova entrega (por isso uma mensagem devolvida no shutdown não é confirmada depois); cotas de mensagens em voo (120 mil em FIFO); throughput por grupo; semântica de `ChangeMessageVisibility` acima do `VisibilityTimeout` restante. O redrive para a DLQ no 6º `ReceiveMessage` (5 recebimentos sem `DeleteMessage`) foi observado.

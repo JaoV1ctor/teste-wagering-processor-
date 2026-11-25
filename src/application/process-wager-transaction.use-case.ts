@@ -76,14 +76,16 @@ export class ProcessWagerTransactionUseCase {
 
     // Fast-path sem lock: replay não disputa a wallet. Só otimização; quem decide a corrida é o INSERT abaixo.
     const known = await this.uow.read(({ transactions }) => transactions.findByIdempotencyKey(command.idempotencyKey));
-    if (known) return replayOf(known, payloadHash);
+    // Sem mensagem (HTTP) o replay não escreve nada. Por mensagem ele ainda passa pelo inbox: a messageId precisa ficar registrada.
+    if (known && !origin) return replayOf(known, payloadHash);
 
     return this.uow.run(async (repositories) => {
       // SPEC §6 passo 3: o inbox entra na MESMA transação, antes do lock da wallet (não toca a wallet, então a ordem de locks não muda).
       const inbox = origin ? await this.receive(repositories, origin, payloadHash) : undefined;
       if (inbox === 'duplicate') return { duplicateMessage: true as const };
 
-      const result = await this.processLocked(repositories, command, payloadHash);
+      // No replay a transação curta só grava o inbox: não há lock de wallet.
+      const result = known ? replayOf(known, payloadHash) : await this.processLocked(repositories, command, payloadHash);
       if (inbox) {
         inbox.markProcessed(this.clock());
         await repositories.inbox.markProcessed(inbox);

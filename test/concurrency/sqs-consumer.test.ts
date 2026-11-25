@@ -81,7 +81,7 @@ describe('#5 worker morre depois do commit e antes do ack', () => {
     }
 
     expect(survivor.outcomes).toHaveLength(1);
-    expect(survivor.outcomes[0]).toMatchObject({ idempotentReplay: true });
+    expect(survivor.outcomes).toEqual([{ duplicateMessage: true }]); // o inbox, commitado junto com o débito, reconhece a messageId
     expect(await transactionCount(message.data.externalTransactionId)).toBe(1);
     expect(await inboxCount(message.messageId)).toBe(1);
     expect(await ledgerBalance(probe, wallet.id)).toEqual({ stored: '70.00', rebuilt: '70.00', entries: 2 });
@@ -115,7 +115,7 @@ describe('#5 worker morre depois do commit e antes do ack', () => {
       await second.consumer.stop();
     }
 
-    expect(survivor.outcomes.every((o) => !(o instanceof Error) && 'idempotentReplay' in o && o.idempotentReplay)).toBe(true);
+    expect(survivor.outcomes).toEqual(Array.from({ length: 4 }, () => ({ duplicateMessage: true })));
     for (const message of sent) expect(await transactionCount(message.data.externalTransactionId)).toBe(1);
     for (const wallet of wallets) expect(await ledgerBalance(probe, wallet.id)).toEqual({ stored: '90.00', rebuilt: '90.00', entries: 2 });
   });

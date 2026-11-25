@@ -136,7 +136,67 @@ describe('inbox na transação do processamento', () => {
   });
 });
 
-type FailurePoint = 'inbox.markProcessed' | 'transactions.addIdempotent' | 'wallets.saveBalance' | 'ledger.add';
+describe('replay de uma chave já conhecida, entrando por mensagem', () => {
+  test('registra a messageId no inbox, já processada, com o hash do conteúdo', async () => {
+    const { wallet, command } = await wagerFor();
+    await useCase.execute(command); // HTTP: sem inbox
+    const messageId = `msg-${uuid()}`;
+
+    const replay = await useCase.execute(command, { consumerName, messageId });
+
+    expect('idempotentReplay' in replay && replay.idempotentReplay).toBe(true);
+    const rows = await inboxRows(messageId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.processed_at).not.toBeNull();
+    expect(rows[0]?.payload_hash).toBe('transaction' in replay ? replay.transaction.payloadHash : '');
+    expect(await ledgerBalance(probe, wallet.id)).toEqual({ stored: '70.00', rebuilt: '70.00', entries: 2 });
+  });
+
+  test('não trava a wallet: o replay termina enquanto outra conexão segura o lock dela', async () => {
+    const { wallet, command } = await wagerFor();
+    await useCase.execute(command);
+    const messageId = `msg-${uuid()}`;
+    const holder = await probe.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query('select id from wallets where id = $1 for update', [wallet.id]);
+      const impatient = new ProcessWagerTransactionUseCase(new MikroOrmUnitOfWork(orm, { lockTimeoutMs: 200, retry: { attempts: 1, baseDelayMs: 1 } }));
+
+      const replay = await impatient.execute(command, { consumerName, messageId });
+
+      expect('idempotentReplay' in replay && replay.idempotentReplay).toBe(true);
+      expect(await inboxRows(messageId)).toHaveLength(1);
+    } finally {
+      await holder.query('ROLLBACK');
+      holder.release();
+    }
+  });
+
+  test('chave conhecida com payload diferente continua 409 e não deixa a messageId no inbox', async () => {
+    const { command } = await wagerFor();
+    await useCase.execute(command);
+    const messageId = `msg-${uuid()}`;
+
+    await expect(useCase.execute({ ...command, money: brl('31.00') }, { consumerName, messageId })).rejects.toBeInstanceOf(IdempotencyConflictError);
+
+    expect(await inboxRows(messageId)).toHaveLength(0);
+  });
+
+  test('o mesmo replay entregue 20 vezes ao mesmo tempo registra uma vez; as outras 19 são duplicatas', async () => {
+    const { wallet, command } = await wagerFor();
+    await useCase.execute(command);
+    const messageId = `msg-${uuid()}`;
+
+    const results = await Promise.all(Array.from({ length: 20 }, () => useCase.execute(command, { consumerName, messageId })));
+
+    expect(results.filter((r) => 'duplicateMessage' in r)).toHaveLength(19);
+    expect(results.filter((r) => 'transaction' in r)).toHaveLength(1);
+    expect(await inboxRows(messageId)).toHaveLength(1);
+    expect(await ledgerBalance(probe, wallet.id)).toEqual({ stored: '70.00', rebuilt: '70.00', entries: 2 });
+  });
+});
+
+type FailurePoint ='inbox.markProcessed' | 'transactions.addIdempotent' | 'wallets.saveBalance' | 'ledger.add';
 
 /** UnitOfWork real (mesma transação SQL) cujo repositório indicado lança depois de os anteriores já terem escrito. */
 function failingAt(point: FailurePoint, boom: Error): UnitOfWork {
