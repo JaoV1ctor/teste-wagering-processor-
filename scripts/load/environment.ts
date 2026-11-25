@@ -6,6 +6,14 @@ import { requireEnv } from '../../src/infrastructure/env';
 
 const UNAVAILABLE = 'não disponível';
 
+/** Configuração da aplicação que muda o resultado; as instâncias herdam o ambiente do gerador. */
+const APPLICATION_SETTINGS = /^(LOCK_TIMEOUT_MS|SQS_(CONSUMER_CONCURRENCY|BATCH_SIZE|WAIT_TIME_SECONDS|VISIBILITY_TIMEOUT_SECONDS|RETRY_BASE_SECONDS|RETRY_MAX_SECONDS)|OUTBOX_(POLL_INTERVAL_MS|BATCH_SIZE|LEASE_MS))$/;
+
+function overrides(): string {
+  const set = Object.entries(process.env).filter(([name, value]) => APPLICATION_SETTINGS.test(name) && value);
+  return set.length === 0 ? 'nenhuma: padrões do código' : set.map(([name, value]) => `${name}=${value}`).sort().join(', ');
+}
+
 function output(command: string[]): string {
   try {
     const result = Bun.spawnSync(command);
@@ -41,6 +49,7 @@ export async function describeEnvironment(): Promise<[string, string][]> {
     ['PostgreSQL', postgres],
     ['Configuração do PostgreSQL', settings],
     ['Imagens do docker-compose.yml (sem limite de CPU ou memória por container)', images],
+    ['Configuração da aplicação sobrescrita por variável de ambiente', overrides()],
     ['Commit medido', `${output(['git', 'rev-parse', '--short', 'HEAD'])}${changed === '' ? '' : ' (com alterações não commitadas)'}`],
   ];
 }

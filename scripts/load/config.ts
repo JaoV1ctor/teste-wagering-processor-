@@ -23,7 +23,7 @@ export interface LoadConfig {
 }
 
 const PROFILES: Record<LoadConfig['profile'], Omit<LoadConfig, 'profile' | 'scenarios'>> = {
-  default: { wallets: 100, requests: 1500, warmupRequests: 200, concurrency: 32, replayPercent: 30, repetitions: 3, instances: 2, seed: 1 },
+  default: { wallets: 100, requests: 1000, warmupRequests: 500, concurrency: 32, replayPercent: 30, repetitions: 3, instances: 2, seed: 1 },
   smoke: { wallets: 5, requests: 60, warmupRequests: 10, concurrency: 8, replayPercent: 30, repetitions: 1, instances: 1, seed: 1 },
 };
 

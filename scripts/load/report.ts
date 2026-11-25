@@ -76,10 +76,11 @@ function scenarioSection(scenario: ScenarioResult): string {
     { header: 'Espera média pelo lock da wallet (ms)', value: (r) => (r.counters.lockWaitCount ? (r.counters.lockWaitSeconds / r.counters.lockWaitCount) * 1000 : undefined) },
   ];
   const outbox: Column[] = [
-    { header: 'Eventos', value: (r) => r.outboxLag?.count, format: counted },
-    { header: 'Lag p50 (ms)', value: (r) => r.outboxLag?.p50 },
-    { header: 'Lag p95 (ms)', value: (r) => r.outboxLag?.p95 },
-    { header: 'Lag máx (ms)', value: (r) => r.outboxLag?.max },
+    { header: 'Eventos', value: (r) => r.outbox.lag?.count, format: counted },
+    { header: 'Lag p50 (ms)', value: (r) => r.outbox.lag?.p50 },
+    { header: 'Lag p95 (ms)', value: (r) => r.outbox.lag?.p95 },
+    { header: 'Lag máx (ms)', value: (r) => r.outbox.lag?.max },
+    { header: 'Publicados por segundo', value: (r) => r.outbox.publishedPerSecond },
     { header: 'Publicação restante após a carga (s)', value: (r) => r.outboxDrainSeconds },
   ];
 

@@ -5,7 +5,7 @@ import { buildWagerMessage } from '../send-wager-message';
 import { idempotencyKeyOf, openWallet, submit, type SubmitOutcome, type WagerPayload, type Wallet } from './client';
 import type { LoadConfig, ScenarioId } from './config';
 import { type Check, checkInvariants, type InvariantReport } from './invariants';
-import { count, type Counters, difference, drainOutbox, outboxLag, readCounters, waitUntil } from './measure';
+import { count, type Counters, difference, drainOutbox, type OutboxStats, outboxStats, readCounters, waitUntil } from './measure';
 import { INDEPENDENT, MIXED, type Mix, pickKind, type PlannedKind, randomFrom, scheduleReplays } from './plan';
 import { runPool } from './pool';
 import { createDatabase, createLoadQueues, deleteQueues, type Instances, type LoadDatabase, type LoadQueues, startInstances } from './stack';
@@ -21,7 +21,7 @@ export interface Repetition {
   statuses: Record<string, number>;
   kinds: Record<string, number>;
   counters: Counters;
-  outboxLag: Distribution | undefined;
+  outbox: OutboxStats;
   outboxDrainSeconds: number;
   /** Cenário D. */
   replays?: { sent: number; answeredAsReplay: number; original: Distribution | undefined; replay: Distribution | undefined };
@@ -182,7 +182,7 @@ async function httpScenario(context: Context, id: 'A' | 'B' | 'D', title: string
           statuses: tally(results.map((r) => String(r.outcome.status))),
           kinds: tally(results.map((r) => r.payload.kind)),
           counters,
-          outboxLag: await outboxLag(stack.database.pool, from, to),
+          outbox: await outboxStats(stack.database.pool, from, to),
           outboxDrainSeconds,
           ...(id === 'D' ? {
             replays: {
@@ -292,7 +292,7 @@ async function queueScenario(context: Context, title: string): Promise<ScenarioR
           statuses: tally(statuses.map((row) => row.status)),
           kinds: tally(payloads.map((payload) => payload.kind)),
           counters: { ...counters, deadlocks: counters.deadlocks - deadlocksBefore },
-          outboxLag: await outboxLag(pool, from, to),
+          outbox: await outboxStats(pool, from, to),
           outboxDrainSeconds,
           queue: { enqueueSeconds, spawnToDoneSeconds, processingWindowSeconds },
         };

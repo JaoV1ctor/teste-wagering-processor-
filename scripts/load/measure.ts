@@ -23,14 +23,26 @@ export async function drainOutbox(pool: pg.Pool): Promise<number> {
   return (Bun.nanoseconds() - started) / 1e9;
 }
 
-/** Lag de cada evento criado na janela: `published_at - occurred_at` (os dois do relógio da aplicação), em ms. */
-export async function outboxLag(pool: pg.Pool, from: Date, to: Date): Promise<Distribution | undefined> {
-  const { rows } = await pool.query<{ lag: string }>(
-    `select (extract(epoch from (published_at - occurred_at)) * 1000)::text as lag from outbox_messages
-      where published_at is not null and occurred_at >= $1 and occurred_at <= $2`,
+export interface OutboxStats {
+  /** `published_at - occurred_at` de cada evento (os dois do relógio da aplicação), em ms. */
+  lag: Distribution | undefined;
+  /** Eventos por segundo entre a primeira e a última publicação, somadas todas as instâncias. */
+  publishedPerSecond: number | undefined;
+}
+
+/** Os eventos criados na janela, todos já publicados. */
+export async function outboxStats(pool: pg.Pool, from: Date, to: Date): Promise<OutboxStats> {
+  const { rows } = await pool.query<{ lag: string; published: string }>(
+    `select (extract(epoch from (published_at - occurred_at)) * 1000)::text as lag, extract(epoch from published_at)::text as published
+       from outbox_messages where published_at is not null and occurred_at >= $1 and occurred_at <= $2`,
     [from, to],
   );
-  return distribution(rows.map((row) => parseFloat(row.lag)));
+  const published = rows.map((row) => parseFloat(row.published));
+  const window = published.length > 1 ? published.reduce((a, b) => Math.max(a, b)) - published.reduce((a, b) => Math.min(a, b)) : 0;
+  return {
+    lag: distribution(rows.map((row) => parseFloat(row.lag))),
+    publishedPerSecond: window > 0 ? (published.length - 1) / window : undefined,
+  };
 }
 
 export interface Counters {
