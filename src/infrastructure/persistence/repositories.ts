@@ -1,9 +1,10 @@
 import { type EntityManager, UniqueConstraintViolationException } from '@mikro-orm/postgresql';
-import { IdempotencyConflictError, WalletAlreadyExistsError } from '../../application/errors';
+import { IdempotencyConflictError, WalletAlreadyExistsError, WalletNotFoundError } from '../../application/errors';
 import type {
   ClaimedPendingReference, InboxRepository, LedgerRecord, LedgerRepository, LedgerSummary, ListLedgerOptions, OutboxRepository,
   WagerTransactionRepository, WalletRepository,
 } from '../../application/ports';
+import { FailureCode } from '../../domain/failure-code';
 import type { InboxMessage } from '../../domain/inbox-message';
 import type { LedgerEntry } from '../../domain/ledger-entry';
 import type { OutboxMessage } from '../../domain/outbox-message';
@@ -77,8 +78,21 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
   }
 
   async findById(id: string): Promise<WagerTransaction | undefined> {
-    const entity = await this.em.findOne(WagerTransactionEntity, { id });
-    return entity ? WagerTransactionMapper.toDomain(entity) : undefined;
+    return this.toDomain(await this.em.findOne(WagerTransactionEntity, { id }));
+  }
+
+  /**
+   * Só uma rejeição por divergência (player ou moeda) pode ter pedido em moeda diferente da wallet; nesse caso a moeda do saldo observado
+   * vem da wallet. A leitura é sem lock: a moeda é imutável no schema, e a ordem de locks não muda.
+   */
+  private async toDomain(entity: WagerTransactionEntity | null): Promise<WagerTransaction | undefined> {
+    if (!entity) return undefined;
+    if (entity.failureCode !== FailureCode.CurrencyMismatch && entity.failureCode !== FailureCode.PlayerMismatch) {
+      return WagerTransactionMapper.toDomain(entity);
+    }
+    const [wallet] = await this.em.execute<{ currency: string }[]>('select currency from wallets where id = ?', [entity.walletId]);
+    if (!wallet) throw new WalletNotFoundError(entity.walletId);
+    return WagerTransactionMapper.toDomain(entity, wallet.currency);
   }
 
   async addIdempotent(transaction: WagerTransaction): Promise<boolean> {
@@ -142,13 +156,11 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
   }
 
   async findByIdempotencyKey(providerId: string, idempotencyKey: string): Promise<WagerTransaction | undefined> {
-    const entity = await this.em.findOne(WagerTransactionEntity, { providerId, idempotencyKey });
-    return entity ? WagerTransactionMapper.toDomain(entity) : undefined;
+    return this.toDomain(await this.em.findOne(WagerTransactionEntity, { providerId, idempotencyKey }));
   }
 
   async findByProviderExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined> {
-    const entity = await this.em.findOne(WagerTransactionEntity, { providerId, externalTransactionId });
-    return entity ? WagerTransactionMapper.toDomain(entity) : undefined;
+    return this.toDomain(await this.em.findOne(WagerTransactionEntity, { providerId, externalTransactionId }));
   }
 }
 

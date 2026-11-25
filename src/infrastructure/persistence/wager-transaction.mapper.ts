@@ -6,8 +6,11 @@ import { WagerTransactionEntity } from './wager-transaction.entity';
 const orUndefined = <T>(value: T | null): T | undefined => value ?? undefined;
 
 export const WagerTransactionMapper = {
-  /** `kind`, `status` e `failureCode` são garantidos pelos CHECKs do schema. */
-  toDomain(entity: WagerTransactionEntity): WagerTransaction {
+  /**
+   * `kind`, `status` e `failureCode` são garantidos pelos CHECKs do schema.
+   * `observed_balance` é saldo da wallet, na moeda DELA: quem lê um pedido rejeitado por divergência informa `walletCurrency`.
+   */
+  toDomain(entity: WagerTransactionEntity, walletCurrency: string = entity.currency): WagerTransaction {
     const money = (value: string) => Money.fromString(value, entity.currency);
     return WagerTransaction.rehydrate({
       id: entity.id, providerId: entity.providerId, externalTransactionId: entity.externalTransactionId,
@@ -18,7 +21,7 @@ export const WagerTransactionMapper = {
       status: entity.status as WagerTransactionStatus,
       referenceTransactionId: orUndefined(entity.referenceTransactionId),
       failureCode: orUndefined(entity.failureCode) as FailureCode | undefined,
-      observedBalance: entity.observedBalance === null ? undefined : money(entity.observedBalance),
+      observedBalance: entity.observedBalance === null ? undefined : Money.fromString(entity.observedBalance, walletCurrency),
       attempts: entity.attempts, nextAttemptAt: orUndefined(entity.nextAttemptAt),
       createdAt: entity.createdAt, updatedAt: entity.updatedAt, processedAt: orUndefined(entity.processedAt),
     });

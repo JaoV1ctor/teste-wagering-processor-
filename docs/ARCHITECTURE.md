@@ -659,7 +659,7 @@ O callback de `uow.run` é reexecutável porque não tem efeito fora do banco (o
 
 - `amount > 0` sempre (o enunciado proíbe negativos; recusar zero é decisão nossa): zero e negativo são 400 na borda. Mais de 2 casas é 400 antes de tocar o banco.
 - Precedência das rejeições: `PLAYER_MISMATCH`, depois `CURRENCY_MISMATCH`, depois `INSUFFICIENT_BALANCE`. `LOSS` não é rejeitada por saldo (não debita).
-- `balance` na resposta é o `observed_balance`: saldo após a operação em `PROCESSED`, saldo visto na decisão em `REJECTED`. Replay devolve o mesmo valor, o saldo observado na época, mesmo que a wallet já tenha mudado.
+- `balance` na resposta é o `observed_balance`: saldo após a operação em `PROCESSED`, saldo visto na decisão em `REJECTED`. Replay devolve o mesmo valor, o saldo observado na época, mesmo que a wallet já tenha mudado. O saldo vem na moeda da wallet, mesmo quando o pedido foi rejeitado por trazer outra moeda; como `observed_balance` guarda só o valor, a leitura dessas rejeições busca a moeda na wallet (imutável no schema, lida sem lock).
 - Replay de `REJECTED` devolve 422 e o mesmo `failureCode`; replay de `PROCESSED`, 201. Mapeamento HTTP: 201 processada, 422 rejeitada (e `FAILED`, ainda inalcançável), 202 aguardando referência (Fase 3).
 - A `Idempotency-Key` é obrigatória (1 a 255 caracteres). O formato `{providerId}:{externalTransactionId}` é a recomendação do enunciado, não uma exigência: o valor enviado é a fonte da verdade.
 - **Na Fase 2, 400:** `kind` `OPENING` (interno), `REFUND` e `ROLLBACK`, e qualquer `referenceExternalTransactionId`, para não aceitar o campo sem resolvê-lo. **Superado na Fase 3**: `REFUND`, `ROLLBACK` e a referência são aceitos e resolvidos; `OPENING` continua `400`.

@@ -69,6 +69,24 @@ describe('POST /wagering/transactions — resultados de negócio', () => {
     expect(await ledgerBalance(probe, wallet.walletId)).toEqual({ stored: '100.00', rebuilt: '100.00', entries: 1 });
   });
 
+  test.each<[string, string, Partial<{ playerId: string }>]>([
+    ['CURRENCY_MISMATCH', 'só a moeda diverge', {}],
+    ['PLAYER_MISMATCH', 'player e moeda divergem', { playerId: uuid() }],
+  ])('%s (%s): replay e consultas devolvem o saldo na moeda da wallet, igual à primeira resposta', async (failureCode, _case, override) => {
+    const wallet = await openWallet(api, '100.00');
+    const payload = wagerPayload(wallet, { money: { amount: '5.00', currency: 'USD' }, ...override });
+
+    const first = await post(payload);
+    const replay = await post(payload);
+
+    expect(first.body).toMatchObject({ failureCode, balance: { amount: '100.00', currency: 'BRL' } });
+    expect(replay.body).toEqual({ ...first.body, idempotentReplay: true });
+    for (const path of [`/wagering/transactions/${first.body.transactionId}`, `/providers/${payload.providerId}/wagering/transactions/${payload.externalTransactionId}`]) {
+      const found = await api.call('GET', path);
+      expect(found.body).toMatchObject({ money: payload.money, balance: { amount: '100.00', currency: 'BRL' } });
+    }
+  });
+
   test('player diferente do dono da wallet: 422 PLAYER_MISMATCH', async () => {
     const wallet = await openWallet(api, '100.00');
     const res = await post(wagerPayload(wallet, { playerId: uuid() }));
