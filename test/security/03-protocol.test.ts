@@ -65,6 +65,13 @@ securityCase('Content-Type ausente, textual, XML ou multipart', '400 ou 415; ban
       'idempotency-key': `k-${uuid()}`, ...(type === '' ? {} : { 'content-type': type }),
     })])), [400, 415]));
 
+securityCase('Corpo de formulário (o que uma página de outra origem consegue enviar sem preflight)', '415; nenhuma wallet criada', () => {
+  const form = `playerId=${uuid()}&initialBalance[amount]=5.00&initialBalance[currency]=BRL`;
+  return expectRejected(env.probe, ['/wallets', '/wagering/transactions', `/wallets/${wallet.walletId}/reconciliation`].flatMap((path): Attempt[] =>
+    ['application/x-www-form-urlencoded', 'application/x-www-form-urlencoded; charset=utf-8', 'Application/X-WWW-Form-Urlencoded'].map((type): Attempt =>
+      [`${path} ${type}`, () => send(env.api, 'POST', path, form, { 'content-type': type, 'idempotency-key': `k-${uuid()}` })])), [415]);
+});
+
 securityCase('Chaves "__proto__", "constructor" e "prototype"', '400 (campo desconhecido); nenhum protótipo poluído', async () => {
   const base = JSON.stringify(walletBody());
   const inject = (member: string) => `{${member},${base.slice(1)}`;

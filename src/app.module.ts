@@ -30,6 +30,7 @@ import { PollingWorker } from './infrastructure/workers/polling-worker';
 import { AuthGuard } from './interface/http/auth.guard';
 import { HideFrameworkHeader } from './interface/http/hide-framework-header';
 import { HttpExceptionFilter } from './interface/http/http-exception.filter';
+import { JsonOnlyGuard } from './interface/http/json-only.guard';
 import { HealthController, READINESS } from './interface/http/health.controller';
 import { METRICS, MetricsController } from './interface/http/metrics.controller';
 import { PROVIDER_IDENTITY, WageringController } from './interface/http/wagering.controller';
@@ -165,6 +166,7 @@ const DEFAULT_HEALTH_CHECK_TIMEOUT_MS = 2000;
     // Ponto de extensão de autenticação (hoje no-op). `useExisting` mantém uma instância só, alcançável pelo próprio token.
     AuthGuard,
     { provide: APP_GUARD, useExisting: AuthGuard },
+    { provide: APP_GUARD, useClass: JsonOnlyGuard },
     { provide: PROVIDER_IDENTITY, useClass: TrustedProviderIdentity },
   ],
 })
