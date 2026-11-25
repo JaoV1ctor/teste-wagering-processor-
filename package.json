@@ -9,6 +9,7 @@
     "test:integration": "bun test test/integration",
     "test:concurrency": "bun test test/concurrency",
     "test:load": "bun run scripts/load/run.ts",
+    "test:security": "bun run scripts/security/run.ts",
     "migration:up": "bun run scripts/migrate.ts up",
     "migration:down": "bun run scripts/migrate.ts down",
     "infra:queues": "bun run scripts/create-queues.ts"
