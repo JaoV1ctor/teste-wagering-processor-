@@ -1,9 +1,12 @@
 // Cenário #4: 3 PROCESSOS reais (child_process), cada um com sua instância da aplicação e seu pool, contra o mesmo Postgres.
 // Nenhum estado de correção em memória: a corretude vem do banco (UNIQUE + lock da wallet).
+// A simultaneidade é PROVADA: o teste segura o lock das wallets até ver requisições dos 3 processos esperando por ele ao mesmo tempo.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
+import { randomUUID as uuid } from 'node:crypto';
 import { type Api, startApi } from '../support/app';
 import { createProbe, ensureSchema, ledgerBalance } from '../support/db';
+import { waitFor } from '../support/sqs';
 import { defaultKey, openWallet, wagerPayload } from '../support/wager';
 
 const PROCESSES = 3;
@@ -28,22 +31,45 @@ interface Outcome {
   body: { transactionId: string; status: string; idempotentReplay: boolean; failureCode?: string };
 }
 
-/** Sobe um processo `bun` que executa `jobs` e devolve as respostas na mesma ordem. */
-function runChild(jobs: Job[]): Promise<Outcome[]> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['run', 'test/support/wager-worker.ts'], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+interface Child {
+  /** Resolve quando a instância do filho está no ar e aguardando o `GO`. */
+  ready: Promise<void>;
+  go(): void;
+  /** Respostas na mesma ordem dos `jobs`. */
+  outcomes: Promise<Outcome[]>;
+  kill(): void;
+}
+
+/** Sobe um processo `bun` que carrega `jobs`, avisa `READY` e só dispara as requisições depois do `GO`. */
+function spawnChild(jobs: Job[], applicationName: string): Child {
+  const child = spawn(process.execPath, ['run', 'test/support/wager-worker.ts'], {
+    cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'],
+    // PGAPPNAME identifica no pg_stat_activity as conexões deste processo; o lock_timeout longo o mantém esperando o lock segurado pelo teste.
+    env: { ...process.env, PGAPPNAME: applicationName, LOCK_TIMEOUT_MS: '60000' },
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+  child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+  const outcomes = new Promise<Outcome[]>((resolve, reject) => {
     child.on('error', reject);
     child.on('close', (code) => {
       const line = stdout.split('\n').find((l) => l.startsWith('RESULT:'));
       if (code !== 0 || line === undefined) reject(new Error(`processo filho falhou (code=${code}): ${stderr.slice(0, 500)}`));
       else resolve(JSON.parse(line.slice('RESULT:'.length)) as Outcome[]);
     });
-    child.stdin.end(JSON.stringify(jobs));
   });
+  outcomes.catch(() => undefined); // quem espera trata o erro; isto evita rejeição solta se o teste falhar antes
+  child.stdin.write(`${JSON.stringify(jobs)}\n`);
+  return {
+    ready: waitFor('filho pronto', () => {
+      if (child.exitCode !== null) throw new Error(`processo filho terminou antes do READY: ${stderr.slice(0, 500)}`);
+      return stdout.includes('READY');
+    }, 30_000),
+    go: () => { child.stdin.end('GO\n'); },
+    outcomes,
+    kill: () => { child.kill('SIGKILL'); },
+  };
 }
 
 const money = (amount: string) => ({ amount, currency: 'BRL' });
@@ -59,7 +85,31 @@ test(`#4 ${PROCESSES} processos reais: mesmas apostas em todos, saldo disputado 
   const ownBets = (): ReturnType<typeof wagerPayload>[] => Array.from({ length: 10 }, () => wagerPayload(walletB, { money: money('30.00') }));
 
   const batches = Array.from({ length: PROCESSES }, () => [...sharedBets.map(job), ...ownBets().map(job)]);
-  const outcomes = await Promise.all(batches.map(runChild));
+  const run = `w4-${uuid().slice(0, 8)}`;
+  const children: Child[] = [];
+  const holder = await probe.connect();
+  let outcomes: Outcome[][];
+  try {
+    await holder.query('BEGIN');
+    await holder.query('select id from wallets where id = any($1) for no key update', [[walletA.walletId, walletB.walletId]]);
+    children.push(...batches.map((jobs, index) => spawnChild(jobs, `${run}-${index}`)));
+    await Promise.all(children.map((child) => child.ready));
+    for (const child of children) child.go();
+
+    // Prova de simultaneidade: os 3 processos têm, no mesmo instante, requisições paradas no lock.
+    await waitFor(`requisições dos ${PROCESSES} processos esperando o lock ao mesmo tempo`, async () => {
+      const { rows } = await probe.query<{ n: string }>(
+        "select count(distinct application_name)::text as n from pg_stat_activity where wait_event_type = 'Lock' and application_name like $1", [`${run}-%`]);
+      return rows[0]?.n === String(PROCESSES);
+    }, 30_000);
+
+    await holder.query('ROLLBACK');
+    outcomes = await Promise.all(children.map((child) => child.outcomes));
+  } finally {
+    await holder.query('ROLLBACK').catch(() => undefined);
+    holder.release();
+    for (const child of children) child.kill();
+  }
   const all = outcomes.flat();
 
   // Nada de 5xx/503: só 201 (processada ou replay) e 422 (rejeição de negócio).
