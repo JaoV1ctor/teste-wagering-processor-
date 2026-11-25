@@ -3,6 +3,7 @@
 import { randomUUID } from 'node:crypto';
 import { SendMessageCommand } from '@aws-sdk/client-sqs';
 import pg from 'pg';
+import { Cleanup, deleteQueuesWithPrefix, releaseOnFailure } from '../../../scripts/cleanup';
 import { buildWagerMessage } from '../../../scripts/send-wager-message';
 import { ProcessWagerTransactionUseCase } from '../../../src/application/process-wager-transaction.use-case';
 import { ReprocessPendingReferencesUseCase } from '../../../src/application/reprocess-pending-references.use-case';
@@ -11,7 +12,7 @@ import { createSqsClient } from '../../../src/infrastructure/messaging/sqs-clien
 import { MikroOrmUnitOfWork } from '../../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import type { QueueConsumer } from '../../../src/interface/sqs/queue-consumer';
 import { type Api, startApi } from '../app';
-import { createEmptyDatabase, initOrm, type Orm, type TemporaryDatabase } from '../db';
+import { createEmptyDatabase, initOrm, type Orm } from '../db';
 import { createTestConsumer, InterceptingQueue, newQueues, type TestQueues, waitFor } from '../sqs';
 import type { SubmitOp, WalletOp } from './operations';
 
@@ -38,24 +39,41 @@ export class World {
   readonly workerErrors: string[] = [];
 
   private constructor(
-    private readonly database: TemporaryDatabase,
     readonly probe: pg.Pool,
     private readonly orm: Orm,
     private readonly apis: Api[],
     private readonly sqs: ReturnType<typeof createSqsClient>,
     private readonly queues: TestQueues,
+    private readonly cleanup: Cleanup,
   ) {}
 
-  static async create(instances: number): Promise<World> {
-    const database = await createEmptyDatabase();
-    const orm = await initOrm(database.url);
-    await orm.migrator.up();
-    const apis: Api[] = [];
-    for (let i = 0; i < instances; i += 1) apis.push(await startApi({ DATABASE_URL: database.url }));
-    const sqs = createSqsClient();
-    const world = new World(database, new pg.Pool({ connectionString: database.url, max: 4 }), orm, apis, sqs, await newQueues(sqs));
-    for (let i = 0; i < instances; i += 1) world.startConsumer();
-    return world;
+  /** Se um passo falhar, o que os anteriores criaram é liberado antes de o erro subir. */
+  static async create(instances: number, { queuePrefix = `rnd-${randomUUID().slice(0, 13)}-` } = {}): Promise<World> {
+    const cleanup = new Cleanup();
+    return releaseOnFailure(cleanup, async () => {
+      const database = await createEmptyDatabase();
+      cleanup.defer(() => database.drop());
+      const orm = await initOrm(database.url);
+      cleanup.defer(() => orm.close());
+      await orm.migrator.up();
+      const apis: Api[] = [];
+      for (let i = 0; i < instances; i += 1) {
+        const api = await startApi({ DATABASE_URL: database.url });
+        cleanup.defer(() => api.close());
+        apis.push(api);
+      }
+      const sqs = createSqsClient();
+      cleanup.defer(() => sqs.destroy());
+      const queues = await newQueues(sqs, queuePrefix);
+      cleanup.defer(() => deleteQueuesWithPrefix(sqs, queuePrefix));
+      const probe = new pg.Pool({ connectionString: database.url, max: 4 });
+      cleanup.defer(() => probe.end());
+      const world = new World(probe, orm, apis, sqs, queues, cleanup);
+      // Registrado por último, roda primeiro: os consumidores param antes de as filas e o banco sumirem.
+      cleanup.defer(() => Promise.all(world.consumers.map((consumer) => consumer.stop())));
+      for (let i = 0; i < instances; i += 1) world.startConsumer();
+      return world;
+    });
   }
 
   async openWallet({ wallet, player, currency, initial }: WalletOp, instance = 0): Promise<HttpReply> {
@@ -108,13 +126,9 @@ export class World {
     return rows[0]!.n;
   }
 
+  /** Para os consumidores e as instâncias, apaga as filas e o banco. */
   async close(): Promise<void> {
-    await Promise.all(this.consumers.map((consumer) => consumer.stop()));
-    await Promise.all(this.apis.map((api) => api.close()));
-    await this.orm.close();
-    await this.probe.end();
-    this.sqs.destroy();
-    await this.database.drop();
+    await this.cleanup.run();
   }
 
   private api(instance: number): Api {

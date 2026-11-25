@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { randomUUID as uuid } from 'node:crypto';
 import type { INestApplication } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { Cleanup, releaseOnFailure } from '../../scripts/cleanup';
 import { AppModule } from '../../src/app.module';
 
 export interface ApiBody {
@@ -32,15 +33,20 @@ export async function startApi(env: Record<string, string> = {}): Promise<Api> {
   Object.assign(process.env, env);
   let app: INestApplication;
   try {
-    app = await NestFactory.create(AppModule, { logger: false });
+    // Sem `abortOnError: false`, uma falha ao montar a aplicação encerraria o processo do teste, sem chance de liberar nada.
+    app = await NestFactory.create(AppModule, { logger: false, abortOnError: false });
   } finally {
     for (const [name, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
   }
-  await app.listen(0);
-  const url = await app.getUrl();
+  const cleanup = new Cleanup();
+  cleanup.defer(() => app.close());
+  const url = await releaseOnFailure(cleanup, async () => {
+    await app.listen(0);
+    return app.getUrl();
+  });
   return {
     app,
     url,

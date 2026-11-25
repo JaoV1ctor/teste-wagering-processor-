@@ -3,6 +3,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import {
   GetQueueAttributesCommand, ReceiveMessageCommand, SendMessageCommand, type Message, type SQSClient,
 } from '@aws-sdk/client-sqs';
+import { Cleanup, deleteQueuesWithPrefix, releaseOnFailure } from '../../scripts/cleanup';
 import { createQueues } from '../../scripts/create-queues';
 import { buildWagerMessage, sendWagerMessage, type WagerMessageInput } from '../../scripts/send-wager-message';
 import type { UnitOfWork } from '../../src/application/ports';
@@ -25,9 +26,11 @@ export interface TestQueues {
   eventsUrl: string;
 }
 
-export async function newQueues(client: SQSClient): Promise<TestQueues> {
-  const prefix = `t${Date.now()}-${uuid().slice(0, 8)}-`;
-  const created = await createQueues(client, prefix);
+/** Tudo ou nada: se uma das três falhar, as já criadas com o prefixo são apagadas. */
+export async function newQueues(client: SQSClient, prefix = `t${Date.now()}-${uuid().slice(0, 8)}-`): Promise<TestQueues> {
+  const cleanup = new Cleanup();
+  cleanup.defer(() => deleteQueuesWithPrefix(client, prefix));
+  const created = await releaseOnFailure(cleanup, () => createQueues(client, prefix));
   return {
     names: { queueName: `${prefix}wager-transactions.fifo`, deadLetterQueueName: `${prefix}wager-transactions-dlq.fifo` },
     mainUrl: created['wager-transactions.fifo']!.url,
