@@ -5,6 +5,7 @@ import { randomUUID as uuid } from 'node:crypto';
 import { Migrator } from '@mikro-orm/migrations';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { buildWagerMessage } from '../../scripts/send-wager-message';
+import type { UnitOfWork } from '../../src/application/ports';
 import { ProcessWagerTransactionUseCase } from '../../src/application/process-wager-transaction.use-case';
 import { JsonLogger } from '../../src/infrastructure/observability/json-logger';
 import { logJson } from '../../src/infrastructure/observability/json-log';
@@ -161,6 +162,77 @@ describe('SQS (o mesmo caso de uso, pelo handler real)', () => {
     expect(disposition).toMatchObject({ action: 'dead-letter', reason: 'MALFORMED_MESSAGE' });
     expect(capture.named('wager_message_permanent_failure')).toHaveLength(1);
     expectNoPayload(capture.lines().map((line) => line.raw).join('\n'), ['valor-que-nao-pode-vazar']);
+  });
+});
+
+describe('texto de exceção que carrega dado sensível não chega à saída', () => {
+  const MARKER = 'segredo-7f3a9c';
+  /** Como um erro do ORM ou de biblioteca pode vir: sem `code`, com o SQL e os valores na mensagem. */
+  const leaky = () => new Error(`insert into wallet_ledger_entries (player_id) values ('${MARKER}') falhou`);
+  const output = () => capture?.lines().map((line) => line.raw).join('\n') ?? '';
+  const handlerOver = (uow: UnitOfWork) =>
+    new WagerMessageHandler(new ProcessWagerTransactionUseCase(uow), {
+      consumerName: WAGER_CONSUMER_NAME, backoff: { baseSeconds: 1, maxSeconds: 1 }, log: logJson,
+    });
+
+  test('SQS: exceção do repositório no meio do processamento (UNEXPECTED_ERROR) loga o nome, nunca a mensagem', async () => {
+    const wallet = await openWallet(api, '100.00');
+    const real = new MikroOrmUnitOfWork(orm);
+    const broken: UnitOfWork = {
+      read: (work) => real.read(work),
+      run: (work) =>
+        real.run((repos) => work({ ...repos, ledger: Object.assign(Object.create(repos.ledger), { add: async () => { throw leaky(); } }) })),
+    };
+    const message = buildWagerMessage({
+      providerId: 'provider-a', playerId: wallet.playerId, walletId: wallet.walletId, roundId: 'r', gameId: 'g', kind: 'BET', amount: '5.00', currency: 'BRL',
+    });
+
+    capture = captureLogs();
+    const disposition = await handlerOver(broken).handle(JSON.stringify(message), 1);
+    capture.restore();
+
+    expect(disposition).toEqual({ action: 'dead-letter', reason: 'UNEXPECTED_ERROR' });
+    expect(capture.named('wager_message_permanent_failure')).toEqual([expect.objectContaining({ errorName: 'Error', messageId: message.messageId })]);
+    expect(output()).not.toContain(MARKER);
+  });
+
+  test('SQS: o type desconhecido é texto do produtor e não é repetido no log', async () => {
+    const body = JSON.stringify({ messageId: 'm-tipo', type: MARKER, occurredAt: new Date().toISOString(), data: {} });
+
+    capture = captureLogs();
+    const disposition = await handlerOver(new MikroOrmUnitOfWork(orm)).handle(body, 1);
+    capture.restore();
+
+    expect(disposition).toEqual({ action: 'dead-letter', reason: 'UNKNOWN_MESSAGE_TYPE' });
+    expect(capture.named('wager_message_permanent_failure')).toEqual([expect.objectContaining({ errorName: 'UnknownMessageTypeError' })]);
+    expect(output()).not.toContain(MARKER);
+  });
+
+  test('HTTP: 500 por exceção sem código loga request_failed com o nome; nem o log nem a resposta repetem a mensagem', async () => {
+    const wallet = await openWallet(api, '100.00');
+    const useCase = api.app.get(ProcessWagerTransactionUseCase);
+    const original = useCase.execute;
+    useCase.execute = (async () => { throw leaky(); }) as typeof original;
+    try {
+      const bet = wagerPayload(wallet);
+      capture = captureLogs();
+      const res = await submit(api, bet, defaultKey(bet), { 'x-correlation-id': 'corr-leak-1' });
+      capture.restore();
+
+      expect(res.status).toBe(500);
+      expect(JSON.stringify(res.body)).not.toContain(MARKER);
+      expect(capture.named('request_failed')).toEqual([expect.objectContaining({ errorName: 'Error', correlationId: 'corr-leak-1' })]);
+      expect(output()).not.toContain(MARKER);
+    } finally {
+      useCase.execute = original;
+    }
+  });
+
+  test('o logger do Nest recebendo um Error também não repete a mensagem', () => {
+    capture = captureLogs();
+    new JsonLogger().error(leaky(), 'stack', 'Ctx');
+    capture.restore();
+    expect(output()).not.toContain(MARKER);
   });
 });
 

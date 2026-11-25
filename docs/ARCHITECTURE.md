@@ -792,7 +792,7 @@ a camada de infraestrutura implementa a porta com `prom-client` e `logJson`. Nen
 ### Logs
 
 **Um único ponto de saída.** `logJson(level, message, fields)` (`infrastructure/observability/json-log.ts`) escreve **uma linha JSON** por chamada: `info` e `warn` em stdout, `error` em stderr, com `level`, `time` (ISO-8601) e `message`.
-Nada mais escreve em stdout/stderr: o logger do Nest (`JsonLogger`, passado em `NestFactory.create`) e o filtro de exceção usam o mesmo `logJson`, e o ESLint tem `no-console: error` em `src/` e `scripts/` (`bun run check` falha se alguém usar `console.*`).
+O código da aplicação não escreve em stdout/stderr por outro caminho: o logger do Nest (`JsonLogger`, passado em `NestFactory.create`) e o filtro de exceção usam o mesmo `logJson`, e o ESLint tem `no-console: error` em `src/` e `scripts/` (`bun run check` falha se alguém usar `console.*`). O que bibliotecas e o runtime escrevem por conta própria está em "Limitações".
 `main.ts` também registra falha de boot pelo `logJson` (`bootstrap_failed`) em vez de deixar o runtime imprimir texto.
 
 **Campos (README §12).** `correlationId` (header `x-correlation-id` no HTTP, até 128 caracteres; `messageId` no SQS; na falta, o id da transação), `messageId`, `transactionId`, `walletId`, `providerId`, mais o resultado (`kind`, `status`, `failureCode`).
@@ -811,12 +811,20 @@ Nada mais escreve em stdout/stderr: o logger do Nest (`JsonLogger`, passado em `
 
 \* só quando existe.
 
-**O que nunca entra em log.** Corpo da requisição ou da mensagem, `playerId`, valores (`amount`, saldos), `roundId`, `gameId`, `Idempotency-Key`, `externalTransactionId`. O log carrega só identificadores internos e o resultado; a divergência de reconciliação loga a **diferença**, não os saldos.
+**O que os campos do serviço nunca levam.** Corpo da requisição ou da mensagem, `playerId`, valores (`amount`, saldos), `roundId`, `gameId`, `Idempotency-Key`, `externalTransactionId`. O log carrega identificadores e o resultado; a divergência de reconciliação loga a **diferença**, não os saldos.
+`correlationId`, `messageId` e `providerId` são texto escolhido por quem chama e são registrados como chegam (são os campos que o README §12 pede).
 Os testes de `test/integration/logs.test.ts` inspecionam a saída real (aplicação real em HTTP, 5xx com o Postgres fora do ar, e o handler real do SQS): cada linha é JSON, os campos esperados estão presentes e nenhum dos valores acima aparece.
 
-**Mensagem de erro do driver não é logada.** Esta foi a parte menos óbvia: o `message` de um erro do MikroORM/driver pode trazer o SQL com os **valores** interpolados (`insert into wallets ... values ('<playerId>', ...)`). Por isso `describeError` loga `errorName` e `errorCode` (SQLSTATE ou código de rede)
-e **só mantém `errorMessage` de erros sem `code`**, isto é, os que o próprio serviço lança com texto escrito por nós (ids, nunca valores). Erro embrulhado mostra `causeName`/`causeCode`; valor que não é `Error` loga só o tipo.
-Alternativa descartada: filtrar o SQL da mensagem por regex (frágil: qualquer formato novo vaza). Custo da regra adotada: um 5xx de banco perde a mensagem livre; o `errorCode` e o `errorName` bastam para diagnosticar e o detalhe continua no próprio Postgres.
+**Mensagem de exceção só para classes nossas conferidas.** O `message` de um erro do driver, do ORM ou de uma biblioteca pode trazer o SQL com os **valores** interpolados. `describeError` loga `errorName` e, se houver, `errorCode` (SQLSTATE ou código de rede);
+`errorMessage` só quando a **classe exata** está na lista permitida de `json-log.ts`: erros de aplicação, os erros de domínio de texto fixo ou só com ids e estados, e `ConfigurationError` (boot: nome da variável, nunca o valor).
+Erro embrulhado mostra `causeName`/`causeCode`; valor que não é `Error` loga só o tipo.
+
+**Correção após revisão independente.** A regra anterior omitia a mensagem só de erros com `code` ou do driver, ou seja, **confiava em todo o resto**: uma exceção sem código vinda do ORM ou de uma biblioteca saía inteira no log.
+Também havia vazamento real sem exceção de terceiros: um `type` desconhecido no SQS (texto do produtor) era repetido por `UnknownMessageTypeError`. Ficam fora da lista as classes nossas que repetem a entrada
+(`InvalidMoneyError`, `CurrencyMismatchError`, `MalformedMessageError`, `UnknownMessageTypeError`). A comparação é por classe exata: subclasse nova não herda a permissão.
+
+Alternativas descartadas: filtrar a mensagem por regex (qualquer formato novo vaza); `instanceof DomainError || ApplicationError` (qualquer classe futura passaria sem conferência).
+Custo assumido: um `Error` genérico (inclusive os de invariante interna e o prazo estourado do readiness) e as mensagens malformadas perdem o texto no log; restam nome, código, `reason` e os ids. A mensagem inválida continua inteira na DLQ para diagnóstico.
 
 ### Métricas (`GET /metrics`, formato texto do Prometheus)
 
@@ -879,8 +887,8 @@ Postgres e MiniStack **reais**; nenhum teste de integração ou concorrência mo
 
 | Camada | Arquivos | O que prova |
 | --- | --- | --- |
-| Unidade | `observed-processing`, `json-log`, `readiness-checker`, `transient-retry` | O relatório do caso de uso vira métrica + log certos (nova, replay, mensagem duplicada); `logJson` (stdout/stderr, uma linha, `undefined` omitido) e a política do `describeError`; timeout e paralelismo do readiness; `isLockConflict` e o callback `onTransientFailure` (willRetry falso na última tentativa) |
-| Integração | `reconciliation`, `health`, `metrics`, `metrics-lock-conflicts`, `metrics-sqs`, `logs`, `wallet-opening-events` | Reconciliação consistente e divergente (nos dois sentidos), 404/400; readiness com Postgres e/ou SQS mortos; formato Prometheus (HELP/TYPE das 9 métricas, cumulatividade dos buckets) e **valores** depois de aposta processada, duplicata, rejeição, pendência e conflito 409; **deadlock real** (40P01) e **lock_timeout real** (55P03) contados; DLQ, retry e duplicata pelo consumidor SQS real; inspeção da saída do logger; eventos da abertura |
+| Unidade | `observed-processing`, `json-log`, `readiness-checker`, `transient-retry` | O relatório do caso de uso vira métrica + log certos (nova, replay, mensagem duplicada); `logJson` (stdout/stderr, uma linha, `undefined` omitido) e a política do `describeError` (lista permitida, classe exata, marcador sensível); timeout e paralelismo do readiness; `isLockConflict` e o callback `onTransientFailure` (willRetry falso na última tentativa) |
+| Integração | `reconciliation`, `health`, `metrics`, `metrics-lock-conflicts`, `metrics-sqs`, `logs`, `wallet-opening-events` | Reconciliação consistente e divergente (nos dois sentidos), 404/400; readiness com Postgres e/ou SQS mortos; formato Prometheus (HELP/TYPE das 9 métricas, cumulatividade dos buckets) e **valores** depois de aposta processada, duplicata, rejeição, pendência e conflito 409; **deadlock real** (40P01) e **lock_timeout real** (55P03) contados; DLQ, retry e duplicata pelo consumidor SQS real; inspeção da saída do logger, inclusive exceções com marcador sensível (HTTP 500, SQS e logger do Nest); eventos da abertura |
 | Concorrência | `test/concurrency/reconciliation.test.ts` | 40 apostas paralelas na mesma wallet com reconciliações em laço: nenhuma divergência falsa; no fim `consistent`, `checkedEntries = 41` e `wallet == ledger` |
 
 Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) conferida nos testes que mexem em saldo; a reconciliação é, ela própria, essa conta exposta por API.
@@ -893,7 +901,8 @@ Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) conferida
 | Reconciliação em **duas** consultas (saldo e depois a soma) em vez de uma | Falha o teste de concorrência nas 3 execuções: a segunda consulta vê commits que a primeira não viu e fabrica divergência |
 | Replay não conta duplicata | Falham 1 teste de unidade e 1 de integração (`wager_duplicates_total`) |
 | Readiness sem a verificação do SQS | Falham 2 testes de health (SQS fora do ar; os dois fora do ar) |
-| `describeError` volta a logar a mensagem do driver | Falha o teste de unidade da política (a mensagem trazia o SQL com valores) |
+| `describeError` volta à regra anterior (omite só erros com `code` ou do driver) | Falham 7 testes: os 4 de marcador sensível na saída real e 3 de unidade |
+| Lista permitida trocada por "qualquer classe que não seja `Error`" | Falham 3 testes de unidade (classes que repetem a entrada, subclasse, `TypeError`) |
 | Lag do outbox fixo em 0 | Falha o teste do gauge com evento pendente |
 
 ### Limitações e pontos em aberto
@@ -904,6 +913,8 @@ Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) conferida
 - **`wager_outbox_lag_seconds` custa uma consulta por scrape** (varre os pendentes; poucos, se o publisher acompanha). Com um backlog enorme, o próprio scrape fica caro. Usa o relógio do banco, enquanto `occurred_at` vem do relógio da aplicação: um desvio entre os dois desloca o valor em segundos.
 - **As métricas são por instância** (cada processo tem o seu registry; contadores zeram no restart). O Prometheus agrega e trata o reset; `wager_outbox_lag_seconds` é global (lê o banco), então toda instância reporta o mesmo valor: não some entre instâncias.
 - **`GET /metrics` e `/health/*` sem autenticação** (README §9 para o health; o `/metrics` segue o mesmo critério): devem ficar na rede interna. `wager_transactions_total` não expõe id algum.
+- **Fora do `logJson`.** Não há tratador de `uncaughtException`/`unhandledRejection`: uma exceção que escape até o runtime é impressa pelo Bun em texto, com a mensagem. O logger do MikroORM usa `console.log` e está sem `debug` (avisos de depreciação ainda sairiam como texto; ligar `debug` imprimiria SQL com valores). Textos que o próprio Nest envia ao logger como `string` são registrados como chegam.
+- **`errorName`, `errorCode` e os nomes de causa vêm da exceção** e são logados sem filtro.
 - **Sem log de acesso HTTP.** Só o resultado de negócio (uma linha por transação decidida ou replay) e as falhas 5xx são logados; 4xx de validação não geram linha (a resposta já diz o motivo e não vale ruído nem risco de eco do payload).
 - **Readiness não olha o consumidor, o worker nem o lag.** Ele diz que as dependências respondem; um consumidor travado por bug não derruba o readiness (a métrica de lag e os logs de erro é que sinalizam). `GetQueueUrl` prova alcance e existência da fila, não a permissão de enviar/receber.
 - **`correlationId` não é guardado na transação** (já registrado na Fase 5): o do reprocesso do worker é o id da transação.

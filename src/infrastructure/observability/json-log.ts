@@ -1,4 +1,12 @@
-import { DriverException } from '@mikro-orm/core';
+import {
+  IdempotencyConflictError, InboxPayloadConflictError, InvalidCursorError, TransientInfrastructureError, WagerTransactionNotFoundError,
+  WalletAlreadyExistsError, WalletNotFoundError,
+} from '../../application/errors';
+import {
+  InsufficientBalanceError, InvalidInboxMessageError, InvalidIntegrationEventError, InvalidOutboxMessageError, InvalidTransactionStateError,
+  InvalidWagerTransactionError, LedgerEntryNotBalancedError, MoneyOverflowError,
+} from '../../domain/errors';
+import { ConfigurationError } from '../env';
 
 export type LogLevel = 'info' | 'warn' | 'error';
 
@@ -24,18 +32,29 @@ export type ErrorDescription = {
 const stringCode = (error: object): string | undefined => ('code' in error && typeof error.code === 'string' ? error.code : undefined);
 
 /**
- * Nome, mensagem e código do erro, sem vazar dado da requisição: a mensagem de um erro do driver (ou de rede) pode trazer o SQL com os
- * valores (`insert into ... values ('<playerId>', 777.77)`), então erro com `code` (SQLSTATE, `ECONNREFUSED`) ou do driver loga só nome e código.
- * Os erros que nós mesmos lançamos têm mensagem escrita por nós (ids, nunca valores) e a mantêm. A causa (um nível) entra só com nome e código.
- * Valor que não é `Error` (alguém lançou uma string ou um objeto) loga só o tipo.
+ * Únicas classes cuja mensagem vai para o log: o texto é escrito por nós e leva no máximo ids, estados e nomes de variáveis.
+ * Ficam de fora as nossas cuja mensagem repete a entrada (`InvalidMoneyError`, `CurrencyMismatchError`, `MalformedMessageError` e
+ * `UnknownMessageTypeError`). Classe nova só entra aqui depois de conferida a mensagem.
+ */
+const CLASSES_WITH_SAFE_MESSAGE: ReadonlySet<unknown> = new Set([
+  WalletNotFoundError, WalletAlreadyExistsError, IdempotencyConflictError, WagerTransactionNotFoundError, InvalidCursorError,
+  TransientInfrastructureError, InboxPayloadConflictError,
+  MoneyOverflowError, InsufficientBalanceError, LedgerEntryNotBalancedError, InvalidWagerTransactionError, InvalidTransactionStateError,
+  InvalidInboxMessageError, InvalidOutboxMessageError, InvalidIntegrationEventError,
+  ConfigurationError,
+]);
+
+/**
+ * Nome e código do erro; a mensagem só para a lista acima, comparada pela classe exata (subclasse não herda). Qualquer outra exceção
+ * (driver, ORM, biblioteca, rede ou um `Error` genérico) pode trazer SQL com os valores da requisição, então a mensagem dela nunca é
+ * logada. A causa (um nível) entra só com nome e código. Valor que não é `Error` (alguém lançou uma string ou um objeto) loga só o tipo.
  */
 export function describeError(error: unknown): ErrorDescription {
   if (!(error instanceof Error)) return { errorName: typeof error };
   const code = stringCode(error);
-  const fromDriver = code !== undefined || error instanceof DriverException;
   const described: ErrorDescription = { errorName: error.name };
   if (code !== undefined) described.errorCode = code;
-  if (!fromDriver) described.errorMessage = error.message;
+  if (CLASSES_WITH_SAFE_MESSAGE.has(error.constructor)) described.errorMessage = error.message;
   if (error.cause instanceof Error) {
     described.causeName = error.cause.name;
     const causeCode = stringCode(error.cause);

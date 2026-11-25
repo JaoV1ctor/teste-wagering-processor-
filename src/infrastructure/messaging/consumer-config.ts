@@ -1,4 +1,4 @@
-import { optionalPositiveInt, requireEnv } from '../env';
+import { ConfigurationError, optionalPositiveInt, requireEnv } from '../env';
 import type { SqsQueueNames } from './sqs-message-queue';
 
 /**
@@ -45,9 +45,9 @@ export function loadWagerConsumerConfig(): WagerConsumerConfig {
   const waitTimeSeconds = optionalPositiveInt('SQS_WAIT_TIME_SECONDS', CONSUMER_DEFAULTS.waitTimeSeconds);
   const baseSeconds = optionalPositiveInt('SQS_RETRY_BASE_SECONDS', CONSUMER_DEFAULTS.retryBaseSeconds);
   const maxSeconds = optionalPositiveInt('SQS_RETRY_MAX_SECONDS', CONSUMER_DEFAULTS.retryMaxSeconds);
-  if (batchSize > SQS_MAX_BATCH_SIZE) throw new Error(`SQS_BATCH_SIZE deve ser no máximo ${SQS_MAX_BATCH_SIZE} (limite do ReceiveMessage)`);
-  if (waitTimeSeconds > SQS_MAX_WAIT_TIME_SECONDS) throw new Error(`SQS_WAIT_TIME_SECONDS deve ser no máximo ${SQS_MAX_WAIT_TIME_SECONDS}`);
-  if (maxSeconds < baseSeconds) throw new Error('SQS_RETRY_MAX_SECONDS não pode ser menor que SQS_RETRY_BASE_SECONDS');
+  if (batchSize > SQS_MAX_BATCH_SIZE) throw new ConfigurationError(`SQS_BATCH_SIZE deve ser no máximo ${SQS_MAX_BATCH_SIZE} (limite do ReceiveMessage)`);
+  if (waitTimeSeconds > SQS_MAX_WAIT_TIME_SECONDS) throw new ConfigurationError(`SQS_WAIT_TIME_SECONDS deve ser no máximo ${SQS_MAX_WAIT_TIME_SECONDS}`);
+  if (maxSeconds < baseSeconds) throw new ConfigurationError('SQS_RETRY_MAX_SECONDS não pode ser menor que SQS_RETRY_BASE_SECONDS');
   return {
     queues: { queueName: requireEnv('SQS_WAGER_QUEUE_NAME'), deadLetterQueueName: requireEnv('SQS_WAGER_DLQ_NAME') },
     consumer: {
