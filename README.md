@@ -95,8 +95,8 @@ Todos na raiz do repositório, com os containers no ar e o `.env` copiado do exe
 
 | Comando | O que faz | Resultado | Tempo medido |
 | --- | --- | --- | --- |
-| `bun run check` | Tipos (`tsc --noEmit`), lint e testes de unidade; não usa containers | 509 testes em 37 arquivos, 0 falhas | 8 s |
-| `bun run test:integration` | Integração com PostgreSQL e MiniStack reais | 454 testes em 43 arquivos, 0 falhas | 2 min 6 s |
+| `bun run check` | Tipos (`tsc --noEmit`), lint e testes de unidade; não usa containers | 514 testes em 37 arquivos, 0 falhas | 8 s |
+| `bun run test:integration` | Integração com PostgreSQL e MiniStack reais | 455 testes em 43 arquivos, 0 falhas | 2 min 6 s |
 | `bun run test:concurrency` | Paralelismo e processos reais | 32 testes em 9 arquivos, 0 falhas | 50 s |
 | `bun run test:security` | Casos de abuso contra a API e a fila; relatório em `security-results/` | 92 casos em 10 arquivos: 78 passaram, 14 confirmam limitações, 0 falharam | 28 s |
 | `bun run test:load` | Carga completa (4 cenários) com conferência de invariantes; relatório em `load-results/` | Todas as invariantes passaram | 3 min 16 s |
@@ -563,8 +563,8 @@ Os testes de integração, concorrência, segurança e carga usam PostgreSQL e M
 
 | Suíte | O que prova | Números |
 | --- | --- | --- |
-| Unidade (`bun run check`) | `Money`, invariantes da `Wallet`, regras de cada tipo de transação, `payloadHash`, classificação de erros; uma regra de lint proíbe `number` para dinheiro | 509 testes, 0 falhas |
-| Integração (`bun run test:integration`) | Migrations, constraints e triggers, atomicidade entre wallet, ledger, inbox e outbox, inbox, retry, DLQ e recuperação | 454 testes, 0 falhas |
+| Unidade (`bun run check`) | `Money`, invariantes da `Wallet`, regras de cada tipo de transação, `payloadHash`, classificação de erros; uma regra de lint proíbe `number` para dinheiro | 514 testes, 0 falhas |
+| Integração (`bun run test:integration`) | Migrations, constraints e triggers, atomicidade entre wallet, ledger, inbox e outbox, inbox, retry, DLQ e recuperação | 455 testes, 0 falhas |
 | Concorrência (`bun run test:concurrency`) | A mesma `BET` 50 vezes em paralelo gera 1 débito; 30 apostas de 10,00 sobre saldo 100,00 processam exatamente 10; 3 processos simultâneos; processo morto entre o commit e o ack | 32 testes, 0 falhas |
 | Invariantes aleatórias (dentro da suíte de concorrência) | Sequências geradas por semente (`101`, `202` e `303`, 150 operações em cada execução, sequencial e concorrente), comparadas com um modelo de referência e com consultas sobre o banco inteiro. Na falha, o teste imprime a semente e reduz a sequência | Ver [Invariantes sob operações aleatórias](docs/ARCHITECTURE.md#invariantes-sob-operações-aleatórias) |
 | Segurança (`bun run test:security`) | Injeção, abuso de valores e de protocolo, idempotência entre provedores, gasto duplo, vazamento, mensagens venenosas, disponibilidade e segredos. Não é um pentest | 92 casos: 78 passaram, 14 confirmam limitações, 0 falharam |
