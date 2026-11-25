@@ -11,18 +11,18 @@ Decisões, alternativas, trade-offs e limitações do serviço. A primeira parte
 - [Garantias e como são provadas](#garantias-e-como-são-provadas)
 - [Decisões transversais](#decisões-transversais): [ORM](#orm-mikroorm), [Money](#mapeamento-do-money), [transações e locks](#estratégia-transacional-e-de-locks)
 - [Autenticação](#autenticação)
-- [Limitações conhecidas](#limitações-conhecidas)
+- [Limitações conhecidas](#limitações-conhecidas): [trade-offs](#trade-offs-assumidos)
 - [Detalhes](#detalhes)
-- [Regras e contratos](#regras-e-contratos): [estados](#máquina-de-estados-de-wagertransaction), [códigos de falha](#códigos-de-falha), [payloadHash](#idempotência-e-payloadhash), [limite do PENDING_REFERENCE](#limite-do-pending_reference), [interpretações](#interpretações-do-enunciado)
-- [Registro de decisões por fase](#registro-de-decisões-por-fase):
-  [0, base técnica](#fase-0--base-técnica-e-spike-de-compatibilidade) ·
-  [1, domínio e wallet](#fase-1--domínio-e-wallet) ·
-  [2, HTTP, idempotência e lock](#fase-2--betwinloss-por-http-idempotência-e-lock) ·
-  [3, reversões e worker](#fase-3--refund-rollback-pending_reference-e-worker) ·
-  [4, SQS e inbox](#fase-4--consumidor-sqs-inbox-dlq-e-shutdown) ·
-  [5, outbox](#fase-5--outbox-transacional-publishers-e-eventos-de-integração) ·
-  [6, operação](#fase-6--reconciliação-health-métricas-e-logs) ·
-  [revisão independente](#revisão-independente-correções-e-limitações-restantes)
+  - [Regras e contratos](#regras-e-contratos): [estados](#máquina-de-estados-de-wagertransaction), [códigos de falha](#códigos-de-falha), [payloadHash](#idempotência-e-payloadhash), [limite do PENDING_REFERENCE](#limite-do-pending_reference), [interpretações](#interpretações-do-enunciado)
+  - [Registro de decisões por fase](#registro-de-decisões-por-fase):
+    [0, base técnica](#fase-0--base-técnica-e-spike-de-compatibilidade) ·
+    [1, domínio e wallet](#fase-1--domínio-e-wallet) ·
+    [2, HTTP, idempotência e lock](#fase-2--betwinloss-por-http-idempotência-e-lock) ·
+    [3, reversões e worker](#fase-3--refund-rollback-pending_reference-e-worker) ·
+    [4, SQS e inbox](#fase-4--consumidor-sqs-inbox-dlq-e-shutdown) ·
+    [5, outbox](#fase-5--outbox-transacional-publishers-e-eventos-de-integração) ·
+    [6, operação](#fase-6--reconciliação-health-métricas-e-logs) ·
+    [revisão independente](#revisão-independente-correções-e-limitações-restantes)
 
 ## Visão geral
 
