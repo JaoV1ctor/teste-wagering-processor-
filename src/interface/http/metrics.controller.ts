@@ -1,5 +1,6 @@
 import { Controller, Get, Inject, Res } from '@nestjs/common';
 import type { Metrics } from '../../infrastructure/observability/metrics';
+import { OpenRoute } from './auth.guard';
 
 export const METRICS = Symbol('METRICS');
 
@@ -8,6 +9,7 @@ interface HeaderSetter {
 }
 
 /** Exposição Prometheus. Sem autenticação, como os health checks: quem raspa é a infraestrutura, dentro da rede. */
+@OpenRoute()
 @Controller('metrics')
 export class MetricsController {
   constructor(@Inject(METRICS) private readonly metrics: Metrics) {}

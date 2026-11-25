@@ -1,5 +1,6 @@
 import { Controller, Get, Inject, Res } from '@nestjs/common';
 import type { ReadinessChecker } from '../../infrastructure/health/readiness';
+import { OpenRoute } from './auth.guard';
 
 export const READINESS = Symbol('READINESS');
 
@@ -8,6 +9,7 @@ interface StatusSetter {
 }
 
 /** Sem autenticação (README §9): quem consulta é o orquestrador. */
+@OpenRoute()
 @Controller('health')
 export class HealthController {
   constructor(@Inject(READINESS) private readonly readiness: ReadinessChecker) {}

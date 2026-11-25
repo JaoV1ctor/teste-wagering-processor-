@@ -126,6 +126,18 @@ Desenho que adotaríamos:
 
 Como o `providerId` entra no `payloadHash`, um replay só devolve o resultado a quem envia o mesmo `providerId`. A `idempotencyKey`, porém, é única no serviço inteiro: um provedor que use a chave de outro recebe `409`.
 
+### Ponto de extensão no código
+
+| Peça | Onde | Hoje | Com autenticação real |
+| --- | --- | --- | --- |
+| `AuthGuard`, global (`APP_GUARD`) | `src/interface/http/auth.guard.ts` | `authenticate()` aceita tudo | Lê a requisição do `ExecutionContext` e valida o token |
+| `@OpenRoute()` | `HealthController`, `MetricsController` | Essas rotas nem chegam a `authenticate()` | Continuam abertas |
+| `ProviderIdentityPort` | `src/application/ports.ts` | Chamada em `POST /wagering/transactions`, depois da validação e antes do caso de uso | Compara a claim do token com `declaredProviderId` e rejeita |
+| Adaptador `TrustedProviderIdentity` | `src/infrastructure/identity/trusted-provider-identity.ts` | Confia no `providerId` do corpo | Substituído na composição (`src/app.module.ts`) |
+
+`test/integration/auth-extension.test.ts` prova que status, corpo, replay e saldo não mudam com ou sem `Authorization`, que o guard é chamado nas rotas protegidas e não nas abertas, e que uma recusa do guard ou da porta responde `403` sem gravar nada.
+O que **ainda faltaria**: chamar a porta na consulta por `/providers/:providerId/...`, definir os papéis das demais rotas e dar ao `401` e ao `403` um `code` próprio no mapeamento de erros (hoje o `403` sai como `HTTP_ERROR`). O consumidor SQS não passa pelo guard nem pela porta.
+
 ## Limitações conhecidas
 
 Resumo; o detalhe e a justificativa da maioria estão na seção de cada fase.

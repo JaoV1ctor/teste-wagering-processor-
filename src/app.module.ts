@@ -1,6 +1,6 @@
 import type { SQSClient } from '@aws-sdk/client-sqs';
 import { type BeforeApplicationShutdown, Inject, Module, type OnApplicationShutdown } from '@nestjs/common';
-import { APP_FILTER } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { CreateWalletUseCase } from './application/create-wallet.use-case';
 import { GetWalletUseCase } from './application/get-wallet.use-case';
@@ -12,6 +12,7 @@ import { ReconcileWalletUseCase } from './application/reconcile-wallet.use-case'
 import { PublishOutboxUseCase } from './application/publish-outbox.use-case';
 import { DEFAULT_REPROCESS_BATCH_SIZE, ReprocessPendingReferencesUseCase } from './application/reprocess-pending-references.use-case';
 import { optionalPositiveInt } from './infrastructure/env';
+import { TrustedProviderIdentity } from './infrastructure/identity/trusted-provider-identity';
 import { postgresCheck, sqsCheck } from './infrastructure/health/dependency-checks';
 import { ReadinessChecker } from './infrastructure/health/readiness';
 import { loadWagerConsumerConfig, type WagerConsumerConfig } from './infrastructure/messaging/consumer-config';
@@ -26,10 +27,11 @@ import { ObservedProcessing } from './infrastructure/observability/observed-proc
 import { ObservedReconciliation } from './infrastructure/observability/observed-reconciliation';
 import { createOrmConfig } from './infrastructure/persistence/orm.config';
 import { PollingWorker } from './infrastructure/workers/polling-worker';
+import { AuthGuard } from './interface/http/auth.guard';
 import { HttpExceptionFilter } from './interface/http/http-exception.filter';
 import { HealthController, READINESS } from './interface/http/health.controller';
 import { METRICS, MetricsController } from './interface/http/metrics.controller';
-import { WageringController } from './interface/http/wagering.controller';
+import { PROVIDER_IDENTITY, WageringController } from './interface/http/wagering.controller';
 import { WalletsController } from './interface/http/wallets.controller';
 import { QueueConsumer } from './interface/sqs/queue-consumer';
 import { WAGER_CONSUMER_NAME, WagerMessageHandler } from './interface/sqs/wager-message-handler';
@@ -158,6 +160,10 @@ const DEFAULT_HEALTH_CHECK_TIMEOUT_MS = 2000;
       },
     },
     { provide: APP_FILTER, useClass: HttpExceptionFilter },
+    // Ponto de extensão de autenticação (hoje no-op). `useExisting` mantém uma instância só, alcançável pelo próprio token.
+    AuthGuard,
+    { provide: APP_GUARD, useExisting: AuthGuard },
+    { provide: PROVIDER_IDENTITY, useClass: TrustedProviderIdentity },
   ],
 })
 export class AppModule implements BeforeApplicationShutdown, OnApplicationShutdown {

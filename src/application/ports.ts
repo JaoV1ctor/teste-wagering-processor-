@@ -4,6 +4,17 @@ import type { OutboxMessage } from '../domain/outbox-message';
 import type { WagerTransaction } from '../domain/wager-transaction';
 import type { Wallet } from '../domain/wallet';
 
+/** Quem chama, como a borda o apresenta: o `providerId` que ele declara e a credencial que enviou, se enviou. */
+export interface ProviderClaim {
+  declaredProviderId: string;
+  authorization: string | undefined;
+}
+
+export interface ProviderIdentityPort {
+  /** Resolve se quem chama pode agir como `declaredProviderId`; rejeita se não puder. Chamada antes de qualquer efeito. */
+  ensureCanActAs(claim: ProviderClaim): Promise<void>;
+}
+
 export interface WalletRepository {
   /** Lança `WalletAlreadyExistsError` se já existir wallet do mesmo player na mesma moeda. */
   add(wallet: Wallet): Promise<void>;
