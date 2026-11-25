@@ -260,3 +260,176 @@ stateDiagram-v2
     REJECTED --> [*]
     FAILED --> [*]
 ```
+
+## Exemplos com curl
+
+Comandos em bash, executados contra a aplicação local com um banco recém-migrado. As respostas abaixo são as reais; ids e datas serão diferentes na sua execução. Cada resposta HTTP vem seguida do status, impresso pelo `-w`.
+
+### Criar uma wallet
+
+```bash
+BASE=http://localhost:3000
+PLAYER_ID=3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d
+
+curl -s -w '\nHTTP %{http_code}\n' -X POST $BASE/wallets \
+  -H 'content-type: application/json' \
+  -d '{"playerId":"'$PLAYER_ID'","initialBalance":{"amount":"100.00","currency":"BRL"}}'
+```
+
+```
+{"id":"949a4d2c-dead-453f-b4c3-36fbbac881bf","playerId":"3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d","balance":{"amount":"100.00","currency":"BRL"},"version":1}
+HTTP 201
+```
+
+Há uma wallet por player e moeda: para repetir o roteiro no mesmo banco, troque o `PLAYER_ID`.
+
+### BET com Idempotency-Key
+
+```bash
+WALLET_ID=949a4d2c-dead-453f-b4c3-36fbbac881bf   # use o "id" da sua resposta
+
+BET='{"providerId":"provider-a","externalTransactionId":"bet-001","playerId":"'$PLAYER_ID'","walletId":"'$WALLET_ID'","roundId":"round-1","gameId":"game-1","kind":"BET","money":{"amount":"25.00","currency":"BRL"}}'
+bet() { curl -s -w '\nHTTP %{http_code}\n' -X POST $BASE/wagering/transactions -H 'content-type: application/json' -H 'Idempotency-Key: provider-a:bet-001' -d "$1"; }
+
+bet "$BET"
+```
+
+```
+{"transactionId":"be935f1f-15ad-4d95-82d4-65734d8d10b5","status":"PROCESSED","balance":{"amount":"75.00","currency":"BRL"},"idempotentReplay":false}
+HTTP 201
+```
+
+### Reenvio (replay) e conflito
+
+O mesmo corpo com a mesma chave devolve o resultado gravado, sem debitar de novo:
+
+```bash
+bet "$BET"
+```
+
+```
+{"transactionId":"be935f1f-15ad-4d95-82d4-65734d8d10b5","status":"PROCESSED","balance":{"amount":"75.00","currency":"BRL"},"idempotentReplay":true}
+HTTP 201
+```
+
+A mesma chave com outro valor é conflito:
+
+```bash
+bet "${BET/25.00/30.00}"
+```
+
+```
+{"code":"IDEMPOTENCY_CONFLICT","message":"Conflito de idempotência: a chave ou a identidade do provedor já pertence a outro payload"}
+HTTP 409
+```
+
+### Consultar a transação
+
+```bash
+TX_ID=be935f1f-15ad-4d95-82d4-65734d8d10b5   # use o "transactionId" da sua resposta
+
+curl -s -w '\nHTTP %{http_code}\n' $BASE/wagering/transactions/$TX_ID
+```
+
+```
+{"transactionId":"be935f1f-15ad-4d95-82d4-65734d8d10b5","providerId":"provider-a","externalTransactionId":"bet-001","walletId":"949a4d2c-dead-453f-b4c3-36fbbac881bf","playerId":"3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d","roundId":"round-1","gameId":"game-1","kind":"BET","money":{"amount":"25.00","currency":"BRL"},"status":"PROCESSED","failureCode":null,"balance":{"amount":"75.00","currency":"BRL"},"createdAt":"2026-11-25T18:54:35.024Z","processedAt":"2026-11-25T18:54:35.024Z"}
+HTTP 200
+```
+
+Também pela identidade no provedor:
+
+```bash
+curl -s -w '\nHTTP %{http_code}\n' $BASE/providers/provider-a/wagering/transactions/bet-001
+```
+
+```
+{"transactionId":"be935f1f-15ad-4d95-82d4-65734d8d10b5","providerId":"provider-a","externalTransactionId":"bet-001","walletId":"949a4d2c-dead-453f-b4c3-36fbbac881bf","playerId":"3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d","roundId":"round-1","gameId":"game-1","kind":"BET","money":{"amount":"25.00","currency":"BRL"},"status":"PROCESSED","failureCode":null,"balance":{"amount":"75.00","currency":"BRL"},"createdAt":"2026-11-25T18:54:35.024Z","processedAt":"2026-11-25T18:54:35.024Z"}
+HTTP 200
+```
+
+### Ledger
+
+O primeiro lançamento é o crédito de abertura da wallet. A paginação usa `limit` e `cursor` (o `nextCursor` da página anterior).
+
+```bash
+curl -s -w '\nHTTP %{http_code}\n' "$BASE/wallets/$WALLET_ID/ledger?limit=10"
+```
+
+```
+{"items":[{"id":"3f3adf0b-907b-44ae-816e-c72e7f4f6f54","transactionId":"27d21faf-2b62-43df-b1aa-bce362445137","direction":"CREDIT","money":{"amount":"100.00","currency":"BRL"},"balanceBefore":{"amount":"0.00","currency":"BRL"},"balanceAfter":{"amount":"100.00","currency":"BRL"},"createdAt":"2026-11-25T18:54:34.481Z"},{"id":"42dd2c0e-176e-40fe-a588-0853437be2eb","transactionId":"be935f1f-15ad-4d95-82d4-65734d8d10b5","direction":"DEBIT","money":{"amount":"25.00","currency":"BRL"},"balanceBefore":{"amount":"100.00","currency":"BRL"},"balanceAfter":{"amount":"75.00","currency":"BRL"},"createdAt":"2026-11-25T18:54:35.024Z"}],"nextCursor":null}
+HTTP 200
+```
+
+### Reconciliação
+
+```bash
+curl -s -w '\nHTTP %{http_code}\n' -X POST $BASE/wallets/$WALLET_ID/reconciliation
+```
+
+```
+{"walletId":"949a4d2c-dead-453f-b4c3-36fbbac881bf","storedBalance":{"amount":"75.00","currency":"BRL"},"calculatedBalance":{"amount":"75.00","currency":"BRL"},"difference":{"amount":"0.00","currency":"BRL"},"consistent":true,"checkedEntries":2}
+HTTP 200
+```
+
+### Health
+
+```bash
+curl -s -w '\nHTTP %{http_code}\n' $BASE/health/live
+curl -s -w '\nHTTP %{http_code}\n' $BASE/health/ready
+```
+
+```
+{"status":"ok"}
+HTTP 200
+{"status":"ok","checks":{"postgres":"up","sqs":"up"}}
+HTTP 200
+```
+
+### Enviar pela fila SQS
+
+Um `WIN` que referencia a `BET`, publicado em `wager-transactions.fifo`. Sem `--message-id` e `--idempotency-key`, o script gera o `messageId` e usa `{providerId}:{externalTransactionId}` como chave.
+
+```bash
+bun run scripts/send-wager-message.ts --wallet-id $WALLET_ID --player-id $PLAYER_ID --provider-id provider-a \
+  --external-transaction-id win-001 --round-id round-1 --game-id game-1 --kind WIN --amount 40.00 --currency BRL --reference bet-001
+```
+
+```
+{"messageId":"c383e2f7-d984-4a40-a052-780e2643c966","externalTransactionId":"win-001"}
+```
+
+O processamento é assíncrono; alguns segundos depois:
+
+```bash
+curl -s -w '\nHTTP %{http_code}\n' $BASE/providers/provider-a/wagering/transactions/win-001
+curl -s -w '\nHTTP %{http_code}\n' $BASE/wallets/$WALLET_ID
+```
+
+```
+{"transactionId":"d1a99407-d56b-4367-a512-5ad1981ac858","providerId":"provider-a","externalTransactionId":"win-001","walletId":"949a4d2c-dead-453f-b4c3-36fbbac881bf","playerId":"3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d","roundId":"round-1","gameId":"game-1","kind":"WIN","money":{"amount":"40.00","currency":"BRL"},"status":"PROCESSED","failureCode":null,"balance":{"amount":"115.00","currency":"BRL"},"createdAt":"2026-11-25T18:54:36.458Z","processedAt":"2026-11-25T18:54:36.458Z"}
+HTTP 200
+{"id":"949a4d2c-dead-453f-b4c3-36fbbac881bf","playerId":"3f2b7c1e-8a4d-4b9e-9c21-5d6f0a1b2c3d","balance":{"amount":"115.00","currency":"BRL"},"version":3}
+HTTP 200
+```
+
+### Métricas
+
+Formato texto do Prometheus. O filtro abaixo omite os comentários e os buckets dos histogramas:
+
+```bash
+curl -s $BASE/metrics | grep -E '^(wager_|outbox_)' | grep -v _bucket
+```
+
+```
+wager_transactions_total{status="PROCESSED",kind="BET"} 1
+wager_transactions_total{status="PROCESSED",kind="WIN"} 1
+wager_duplicates_total 1
+wager_dlq_messages_total 0
+wager_lock_conflicts_total 0
+wager_wallet_lock_wait_seconds_sum 0.001492899999999736
+wager_wallet_lock_wait_seconds_count 2
+wager_processing_duration_seconds_sum 0.05496469999999999
+wager_processing_duration_seconds_count 3
+wager_reconciliation_divergence_total 0
+wager_outbox_lag_seconds 0
+```
