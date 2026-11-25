@@ -19,7 +19,7 @@ export function leaksIn(text: string): string[] {
 }
 
 /**
- * Vazamentos em uma resposta. `sent` é o valor enviado, que a validação pode repetir: só é descontado onde a API o repete, entre aspas em
+ * Vazamentos em uma resposta. `sent` é o valor enviado, que a validação pode repetir: só é descontado onde a API o repete, uma vez e entre aspas, em
  * `details[].message` de um `VALIDATION_ERROR`. O resto do corpo é examinado como veio.
  */
 export function leaksInReply(text: string, sent?: string): string[] {
@@ -35,7 +35,7 @@ function withoutEcho(text: string, sent: string): string {
   if (!isValidationError(body)) return text;
   return body.details.reduce<string>((raw, detail) => {
     if (!isRecord(detail) || typeof detail['message'] !== 'string') return raw;
-    const clean = JSON.stringify(detail['message'].replaceAll(`"${sent}"`, '"(eco)"'));
+    const clean = JSON.stringify(detail['message'].replace(`"${sent}"`, '"(eco)"'));
     // Por função: um `$&` na mensagem não é interpretado pelo `replace`.
     return raw.replace(JSON.stringify(detail['message']), () => clean);
   }, text);

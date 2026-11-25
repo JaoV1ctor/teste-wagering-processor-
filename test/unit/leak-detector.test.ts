@@ -62,6 +62,11 @@ describe('vazamento proposital é apontado', () => {
     expect(leaksInReply(validation(echo(sent), { debug: sent }), sent)).toContain('SQL');
   });
 
+  test('na mesma mensagem, só uma cópia entre aspas é o eco: a outra é apontada', () => {
+    const sent = 'select 1 from wallets';
+    expect(leaksInReply(validation(`${echo(sent)}; consulta executada: "${sent}"`), sent)).toContain('SQL');
+  });
+
   test('em details[].message, só o eco entre aspas é descontado', () => {
     expect(leaksInReply(validation(`${echo('from')} em ${SQL}`), 'from')).toContain('SQL');
   });
