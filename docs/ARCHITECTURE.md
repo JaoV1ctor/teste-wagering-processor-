@@ -13,7 +13,7 @@ Decisões, alternativas, trade-offs e limitações do serviço. A primeira parte
 - [Autenticação](#autenticação)
 - [Limitações conhecidas](#limitações-conhecidas)
 - [Detalhes](#detalhes)
-- [Regras e contratos](#regras-e-contratos): [estados](#máquina-de-estados-de-wagertransaction)
+- [Regras e contratos](#regras-e-contratos): [estados](#máquina-de-estados-de-wagertransaction), [códigos de falha](#códigos-de-falha)
 - [Registro de decisões por fase](#registro-de-decisões-por-fase):
   [0, base técnica](#fase-0--base-técnica-e-spike-de-compatibilidade) ·
   [1, domínio e wallet](#fase-1--domínio-e-wallet) ·
@@ -203,6 +203,32 @@ Estados terminais: **`PROCESSED`, `REJECTED` e `FAILED`**. A transação nasce `
 - **Banco** (trigger `wager_transactions_guard`): recusa qualquer `UPDATE` de linha terminal, `PENDING_REFERENCE` para `PENDING`, mudança de colunas de identidade e `DELETE`. As demais transições ficam a cargo do domínio.
 - **O que é gravado hoje:** `PROCESSED`, `REJECTED` e `PENDING_REFERENCE`. A aplicação não persiste `PENDING`, e nenhum caminho chama `fail`.
 - **Provas:** `test/unit/wager-transaction.test.ts`, `test/integration/schema.test.ts`.
+
+#### Códigos de falha
+
+Fonte: `src/domain/failure-code.ts` (12 códigos). A ordem de precedência das regras está em "Regras de reversão e códigos de falha" (Fase 3).
+
+- **HTTP:** vale para a submissão e para o replay. A consulta (`GET`) responde `200` com `status` e `failureCode`. Pela fila não há status: a mensagem recebe ack e a rejeição sai no evento `WagerTransactionRejected`.
+- **Reenviar:** nenhum `failureCode` se resolve reenviando a mesma requisição, que devolve o mesmo resultado. Reenvio é para `503` (e, na fila, a mensagem sem ack).
+- **Corrigir:** é uma **nova** transação, com `externalTransactionId` e `Idempotency-Key` novos. Mesma chave com payload corrigido, ou mesmo id externo com outra chave, dá `409`.
+- **Desistir:** não há payload que mude o resultado daquela operação naquele momento.
+
+| Código | Quando ocorre | HTTP | O que o provedor faz |
+| --- | --- | --- | --- |
+| `INSUFFICIENT_BALANCE` | `BET` maior que o saldo | `422` | Desistir; outra aposta é outra transação |
+| `BALANCE_LIMIT_EXCEEDED` | Crédito passaria do máximo de `NUMERIC(19,2)` | `422` | Desistir e escalar à operação |
+| `REVERSAL_WOULD_OVERDRAW` | Reversão que debita (`ROLLBACK` de `WIN` ou `REFUND`) deixaria o saldo negativo | `422` | Desistir e escalar; como rejeitada não conta como reversão, uma nova é avaliada se houver saldo |
+| `REFERENCE_NOT_FOUND` | A referência não chegou, ou seguiu pendente, até o limite do worker | `202` na submissão; `422` no replay após o limite | Corrigir: enviar a referenciada e depois uma nova transação |
+| `REFERENCE_MISMATCH` | Referência de outro player, wallet, rodada ou moeda | `422` | Corrigir o payload |
+| `INVALID_REFERENCE_KIND` | `REFUND` que não aponta `BET`; `ROLLBACK` que não aponta `BET`, `WIN` ou `REFUND`; `WIN`/`LOSS` que não aponta `BET` | `422` | Corrigir o payload |
+| `REFERENCE_NOT_PROCESSED` | A referência está `REJECTED` ou `FAILED` | `422` | Desistir: não há o que reverter |
+| `ALREADY_REVERSED` | `REFUND`/`ROLLBACK` de referência que já tem reversão efetiva | `422` | Desistir: já está revertida |
+| `AMOUNT_MISMATCH` | Valor de `REFUND`/`ROLLBACK` diferente do da referência | `422` | Corrigir o payload |
+| `CURRENCY_MISMATCH` | Moeda diferente da wallet | `422` | Corrigir o payload |
+| `PLAYER_MISMATCH` | `playerId` não é o dono da wallet | `422` | Corrigir o payload |
+| `INTERNAL_PERMANENT_ERROR` (status `FAILED`) | Erro permanente de infraestrutura; previsto no domínio, **nenhum caminho atual o grava** (ver Fase 4) | `422` se existisse | Desistir e contatar o suporte |
+
+Erros sem `failureCode` (`400`, `404`, `409`, `500`, `503`) estão na tabela "Mapeamento HTTP" (Fase 1, decisão 8).
 
 ### Registro de decisões por fase
 
@@ -558,22 +584,7 @@ A referência é resolvida por `(providerId, referenceExternalTransactionId)`: o
 Toda rejeição é gravada (auditável), não altera saldo nem `version` e não gera ledger; replay devolve o mesmo 422 e o mesmo `failureCode`.
 HTTP: `201` processada, `202` `PENDING_REFERENCE`, `422` rejeição, tanto na 1ª vez quanto no replay (que acrescenta `idempotentReplay: true`).
 
-Taxonomia de `failureCode` (`src/domain/failure-code.ts`), estável e legível por máquina:
-
-| Código | Quando | O que o provedor faz |
-| --- | --- | --- |
-| `INSUFFICIENT_BALANCE` | `BET` sem saldo | Não reenvia; nova aposta exige nova chave |
-| `REVERSAL_WOULD_OVERDRAW` | Reversão deixaria o saldo negativo | Não reenvia; escala para a operação |
-| `BALANCE_LIMIT_EXCEEDED` | Crédito passaria do máximo de `NUMERIC(19,2)` | Não reenvia; escala para a operação |
-| `REFERENCE_NOT_FOUND` | A referência não chegou até o limite do worker | Envia a referenciada e depois uma **nova** reversão |
-| `REFERENCE_MISMATCH` | Referência de outro player, wallet, rodada ou moeda | Corrige o payload |
-| `INVALID_REFERENCE_KIND` | Tipo referenciado não permitido | Corrige o payload |
-| `REFERENCE_NOT_PROCESSED` | Referência `REJECTED` ou `FAILED` | Desiste: não há o que reverter |
-| `ALREADY_REVERSED` | Já há reversão efetiva da referência | Nada a fazer |
-| `AMOUNT_MISMATCH` | Valor diferente do da referência | Corrige o payload |
-| `CURRENCY_MISMATCH` | Moeda diferente da wallet | Corrige o payload |
-| `PLAYER_MISMATCH` | `playerId` não é o dono da wallet | Corrige o payload |
-| `INTERNAL_PERMANENT_ERROR` (status `FAILED`) | Erro permanente de infraestrutura; previsto no domínio, nenhum caminho atual o grava (ver Fase 4) | Contata o suporte |
+A taxonomia completa, com HTTP e ação do provedor, está em [Códigos de falha](#códigos-de-falha).
 
 ##### Interpretação: "uma reversão efetiva por transação referenciada"
 
