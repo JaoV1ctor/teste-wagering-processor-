@@ -124,7 +124,7 @@ describe('Ledger imutável e encadeado, wallet: version e consistência (estado 
 });
 
 describe('Idempotência, estados terminais e reversão única', () => {
-  expectFail('mesma idempotency_key duas vezes', async (c) => {
+  expectFail('mesma idempotency_key duas vezes no mesmo provedor', async (c) => {
     const w = await mkWallet(c); const k = uuid(); await mkTx(c, w, { key: k, status: 'PENDING' }); await mkTx(c, w, { key: k, status: 'PENDING' });
   }, /duplicate|unique/i);
   expectFail('mesmo (provider, externalTransactionId) com outra key', async (c) => {
@@ -171,7 +171,7 @@ type BetOpts = { lock?: boolean; order?: 'lock-first' | 'insert-first'; mode?: s
 async function processBet(w: Wallet, key: string, amount: string, { lock = true, order = 'lock-first', mode = 'FOR UPDATE' }: BetOpts = {}): Promise<BetResult> {
   // Fast-path de idempotência: leitura SEM lock e sem tocar a wallet; resolve replays já commitados.
   if (order === 'lock-first') {
-    const ex = await pool.query('SELECT 1 FROM wager_transactions WHERE idempotency_key = $1', [key]);
+    const ex = await pool.query("SELECT 1 FROM wager_transactions WHERE provider_id = 'p' AND idempotency_key = $1", [key]);
     if (ex.rowCount) return { replay: true };
   }
   const c = await pool.connect();
@@ -180,7 +180,7 @@ async function processBet(w: Wallet, key: string, amount: string, { lock = true,
     const id = uuid();
     const insertTx = () => c.query(`INSERT INTO wager_transactions
       (id, provider_id, external_transaction_id, idempotency_key, payload_hash, wallet_id, player_id, round_id, game_id, kind, amount, currency, status)
-      VALUES ($1,'p',$2,$2,$3,$4,$5,'r','g','BET',$6,'BRL','PENDING') ON CONFLICT (idempotency_key) DO NOTHING RETURNING id`,
+      VALUES ($1,'p',$2,$2,$3,$4,$5,'r','g','BET',$6,'BRL','PENDING') ON CONFLICT (provider_id, idempotency_key) DO NOTHING RETURNING id`,
       [id, key, 'b'.repeat(64), w.id, w.player, amount]);
     const lockWallet = () => c.query<{ balance: string; version: number }>(`SELECT balance, version FROM wallets WHERE id = $1 ${lock ? mode : ''}`, [w.id]);
     let r;

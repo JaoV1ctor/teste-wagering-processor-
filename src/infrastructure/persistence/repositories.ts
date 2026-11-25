@@ -91,7 +91,7 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
            amount, currency, reference_external_transaction_id, reference_transaction_id, status, failure_code, observed_balance,
            attempts, next_attempt_at, created_at, updated_at, processed_at)
          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         on conflict (idempotency_key) do nothing returning id`,
+         on conflict (provider_id, idempotency_key) do nothing returning id`,
         [
           e.id, e.providerId, e.externalTransactionId, e.idempotencyKey, e.payloadHash, e.walletId, e.playerId, e.roundId, e.gameId, e.kind,
           e.amount, e.currency, e.referenceExternalTransactionId, e.referenceTransactionId, e.status, e.failureCode, e.observedBalance,
@@ -141,8 +141,8 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
     return found.length > 0;
   }
 
-  async findByIdempotencyKey(idempotencyKey: string): Promise<WagerTransaction | undefined> {
-    const entity = await this.em.findOne(WagerTransactionEntity, { idempotencyKey });
+  async findByIdempotencyKey(providerId: string, idempotencyKey: string): Promise<WagerTransaction | undefined> {
+    const entity = await this.em.findOne(WagerTransactionEntity, { providerId, idempotencyKey });
     return entity ? WagerTransactionMapper.toDomain(entity) : undefined;
   }
 

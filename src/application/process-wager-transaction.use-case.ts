@@ -75,7 +75,7 @@ export class ProcessWagerTransactionUseCase {
     });
 
     // Fast-path sem lock: replay não disputa a wallet. Só otimização; quem decide a corrida é o INSERT abaixo.
-    const known = await this.uow.read(({ transactions }) => transactions.findByIdempotencyKey(command.idempotencyKey));
+    const known = await this.uow.read(({ transactions }) => transactions.findByIdempotencyKey(command.providerId, command.idempotencyKey));
     // Sem mensagem (HTTP) o replay não escreve nada. Por mensagem ele ainda passa pelo inbox: a messageId precisa ficar registrada.
     if (known && !origin) return replayOf(known, payloadHash);
 
@@ -123,8 +123,8 @@ export class ProcessWagerTransactionUseCase {
     const entry = await settleLocked({ transactions }, wallet, transaction, { entryId: this.newId(), at: now });
 
     if (!(await transactions.addIdempotent(transaction))) {
-      // Outra requisição com a mesma chave commitou antes: nada do que decidimos em memória foi gravado.
-      const winner = await transactions.findByIdempotencyKey(command.idempotencyKey);
+      // Outra requisição do mesmo provedor com a mesma chave commitou antes: nada do que decidimos em memória foi gravado.
+      const winner = await transactions.findByIdempotencyKey(command.providerId, command.idempotencyKey);
       if (!winner) throw new Error('Chave de idempotência em conflito, mas a transação vencedora não está visível');
       return replayOf(winner, payloadHash);
     }
@@ -151,7 +151,7 @@ function reportOf(
   return { outcome: result.idempotentReplay ? 'replay' : 'new', transaction: result.transaction, context, durationSeconds };
 }
 
-/** Mesma chave e mesmo payload é replay; mesma chave com payload diferente é conflito, nunca replay. */
+/** Para a chave de um provedor: mesmo payload é replay; payload diferente é conflito, nunca replay. */
 function replayOf(existing: WagerTransaction, payloadHash: string): ProcessWagerResult {
   if (!existing.matchesPayload(payloadHash)) throw new IdempotencyConflictError();
   return { transaction: existing, idempotentReplay: true };

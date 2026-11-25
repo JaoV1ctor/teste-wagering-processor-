@@ -38,7 +38,7 @@ export interface WagerTransactionRepository {
   add(transaction: WagerTransaction): Promise<void>;
   findById(id: string): Promise<WagerTransaction | undefined>;
   /**
-   * `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING`: `true` se gravou, `false` se a chave já existia (o chamador relê).
+   * `INSERT ... ON CONFLICT (provider_id, idempotency_key) DO NOTHING`: `true` se gravou, `false` se o provedor já usou a chave (o chamador relê).
    * Lança `IdempotencyConflictError` se (provider, externalTransactionId) já existir com outra chave.
    */
   addIdempotent(transaction: WagerTransaction): Promise<boolean>;
@@ -55,7 +55,8 @@ export interface WagerTransactionRepository {
   claimDuePendingReference(now: Date, limit: number, leaseUntil: Date): Promise<ClaimedPendingReference[]>;
   /** Existe REFUND/ROLLBACK PROCESSED que reverte `referenceTransactionId`? Só reversão efetiva conta. */
   hasEffectiveReversal(referenceTransactionId: string): Promise<boolean>;
-  findByIdempotencyKey(idempotencyKey: string): Promise<WagerTransaction | undefined>;
+  /** A chave só identifica uma transação dentro do provedor: outro provedor pode usar a mesma. */
+  findByIdempotencyKey(providerId: string, idempotencyKey: string): Promise<WagerTransaction | undefined>;
   findByProviderExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined>;
 }
 

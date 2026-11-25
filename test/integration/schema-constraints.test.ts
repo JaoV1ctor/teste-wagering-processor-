@@ -93,6 +93,23 @@ describe('wager_transactions', () => {
     await rejects(constraint, async (c) => transaction(c, await wallet(c), overrides));
   });
 
+  test('a mesma chave no mesmo provedor é recusada pela constraint por provedor', async () => {
+    await rejects(/wt_provider_idempotency_key_uq/, async (c) => {
+      const owner = await wallet(c);
+      await transaction(c, owner, { idempotency_key: 'repetida' });
+      await transaction(c, owner, { idempotency_key: 'repetida' });
+    });
+  });
+
+  test('a mesma chave em provedores diferentes é aceita', async () => {
+    await inRollback(async (c) => {
+      const owner = await wallet(c);
+      await transaction(c, owner, { provider_id: 'alfa', idempotency_key: 'repartida' });
+      await transaction(c, owner, { provider_id: 'beta', idempotency_key: 'repartida' });
+      expect((await c.query("select 1 from wager_transactions where provider_id in ('alfa', 'beta') and idempotency_key = 'repartida' and wallet_id = $1", [owner.id])).rowCount).toBe(2);
+    });
+  });
+
   test('recusa referência a si mesma', async () => {
     const id = uuid();
     await rejects(/wt_not_self_reference/, async (c) =>

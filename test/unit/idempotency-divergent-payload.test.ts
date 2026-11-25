@@ -27,18 +27,23 @@ function stored(): WagerTransaction {
   return transaction;
 }
 
+const OPENED_TRANSACTION = 'o caso de uso abriu uma transação';
+
 function useCaseKnowing(transaction: WagerTransaction): ProcessWagerTransactionUseCase {
   const uow: UnitOfWork = {
     read: (work) =>
       work({
-        transactions: { findByIdempotencyKey: async (key: string) => (key === transaction.idempotencyKey ? transaction : undefined) },
+        transactions: {
+          findByIdempotencyKey: async (providerId: string, key: string) =>
+            (providerId === transaction.providerId && key === transaction.idempotencyKey ? transaction : undefined),
+        },
       } as unknown as Repositories),
-    run: () => Promise.reject(new Error('uma chave conhecida, entrando por HTTP, não pode abrir transação')),
+    run: () => Promise.reject(new Error(OPENED_TRANSACTION)),
   };
   return new ProcessWagerTransactionUseCase(uow);
 }
 
-describe('mesma Idempotency-Key', () => {
+describe('mesma Idempotency-Key do mesmo provedor', () => {
   test('mesmo payload: replay da transação gravada, sem abrir transação', async () => {
     const transaction = stored();
 
@@ -53,11 +58,14 @@ describe('mesma Idempotency-Key', () => {
     expect(result.idempotentReplay).toBe(true);
   });
 
+  test('de OUTRO provedor, com o mesmo payload: não é replay nem conflito; segue para o processamento', async () => {
+    await expect(useCaseKnowing(stored()).execute({ ...command, providerId: 'provider-b' })).rejects.toThrow(OPENED_TRANSACTION);
+  });
+
   test.each<[string, Partial<ProcessWagerCommand>]>([
     ['valor', { money: brl('10.01') }],
     ['moeda', { money: Money.fromString('10.00', 'USD') }],
     ['tipo', { kind: WagerTransactionKind.Loss }],
-    ['provedor', { providerId: 'provider-b' }],
     ['id externo', { externalTransactionId: 'ext-2' }],
     ['player', { playerId: 'player-2' }],
     ['wallet', { walletId: 'wallet-2' }],

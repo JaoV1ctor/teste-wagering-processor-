@@ -122,7 +122,7 @@ describe('porta de identidade do provedor', () => {
     const res = await submit(api, payload, defaultKey(payload));
 
     expect(res.status).toBe(403);
-    expect((await probe.query('select 1 from wager_transactions where idempotency_key = $1', [defaultKey(payload)])).rows).toEqual([]);
+    expect((await probe.query('select 1 from wager_transactions where provider_id = $1 and idempotency_key = $2', [payload.providerId, defaultKey(payload)])).rows).toEqual([]);
     expect(await ledgerBalance(probe, wallet.walletId)).toEqual({ stored: '100.00', rebuilt: '100.00', entries: 1 });
   });
 });

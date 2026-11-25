@@ -101,9 +101,9 @@ describe('ordem de locks e escrita do ProcessWagerTransaction', () => {
     expect(indexOf(statements, INSERT_LEDGER)).toBe(-1);
   });
 
-  test('o INSERT da transação usa ON CONFLICT (idempotency_key) DO NOTHING', async () => {
+  test('o INSERT da transação usa ON CONFLICT (provider_id, idempotency_key) DO NOTHING', async () => {
     const { statements } = await emitted(WagerTransactionKind.Bet, '30.00');
     const insert = statements.find((q) => INSERT_TX.test(q)) ?? '';
-    expect(insert).toMatch(/on conflict \(\s*"?idempotency_key"?\s*\) do nothing/);
+    expect(insert).toMatch(/on conflict \(\s*"?provider_id"?\s*,\s*"?idempotency_key"?\s*\) do nothing/);
   });
 });

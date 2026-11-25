@@ -17,7 +17,7 @@ export class WalletAlreadyExistsError extends ApplicationError {
   }
 }
 
-/** Mesma `Idempotency-Key` com payload diferente, ou mesma identidade do provedor com outra chave. Nunca é replay. */
+/** No mesmo provedor: `Idempotency-Key` repetida com payload diferente, ou o mesmo id externo com outra chave. Nunca é replay. */
 export class IdempotencyConflictError extends ApplicationError {
   constructor() {
     super('Conflito de idempotência: a chave ou a identidade do provedor já pertence a outro payload');

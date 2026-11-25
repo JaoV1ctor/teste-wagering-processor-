@@ -56,8 +56,25 @@ describe('WagerTransactionRepository.addIdempotent', () => {
     ]);
 
     expect(results).toEqual([true, false]);
-    const { rows } = await probe.query('select id from wager_transactions where idempotency_key = $1', [key]);
+    const { rows } = await probe.query("select id from wager_transactions where provider_id = 'provider-b' and idempotency_key = $1", [key]);
     expect(rows).toEqual([{ id: first.id }]);
+  });
+
+  test('a mesma chave em outro provedor grava (true), e cada provedor só encontra a própria', async () => {
+    const wallet = await openWallet('10.00');
+    const key = `k-${uuid()}`;
+    const ofB = finishedLoss(wallet, key, `e-${uuid()}`);
+    const ofC = WagerTransaction.rehydrate({ ...finishedLoss(wallet, key, `e-${uuid()}`).toState(), providerId: 'provider-c' });
+
+    const results = await uow.run(async ({ transactions }) => [await transactions.addIdempotent(ofB), await transactions.addIdempotent(ofC)]);
+
+    expect(results).toEqual([true, true]);
+    const found = await uow.read(async ({ transactions }) => ({
+      b: await transactions.findByIdempotencyKey('provider-b', key),
+      c: await transactions.findByIdempotencyKey('provider-c', key),
+      other: await transactions.findByIdempotencyKey('provider-d', key),
+    }));
+    expect([found.b?.id, found.c?.id, found.other]).toEqual([ofB.id, ofC.id, undefined]);
   });
 
   test('texto com aspas, barra, ? e $1 é gravado literalmente (a interpolação do ORM escapa e não reinterpreta marcadores)', async () => {
@@ -87,10 +104,10 @@ describe('WagerTransactionRepository.addIdempotent', () => {
     await uow.run(({ transactions }) => transactions.addIdempotent(stored));
 
     const found = await uow.read(async ({ transactions }) => ({
-      byKey: await transactions.findByIdempotencyKey(key),
+      byKey: await transactions.findByIdempotencyKey('provider-b', key),
       byProvider: await transactions.findByProviderExternalId('provider-b', ext),
       byId: await transactions.findById(stored.id),
-      missing: await transactions.findByIdempotencyKey(`nao-existe-${uuid()}`),
+      missing: await transactions.findByIdempotencyKey('provider-b', `nao-existe-${uuid()}`),
     }));
 
     expect(found.byKey?.toState()).toEqual(stored.toState());

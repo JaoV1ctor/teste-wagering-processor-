@@ -6,9 +6,9 @@ import { Money } from '../../src/domain/money';
 import { requireEnv } from '../../src/infrastructure/env';
 import { createOrmConfig } from '../../src/infrastructure/persistence/orm.config';
 
-/** ORM real (Postgres do compose) com o Migrator registrado. Nunca mock. */
-export async function initOrm() {
-  return MikroORM.init({ ...createOrmConfig(), extensions: [Migrator] });
+/** ORM real (Postgres do compose) com o Migrator registrado. Nunca mock. `url` aponta para outro banco do mesmo servidor. */
+export async function initOrm(url?: string) {
+  return MikroORM.init({ ...createOrmConfig(), extensions: [Migrator], ...(url === undefined ? {} : { clientUrl: url }) });
 }
 
 export type Orm = Awaited<ReturnType<typeof initOrm>>;
@@ -26,6 +26,28 @@ export async function ensureSchema(): Promise<void> {
 /** Conexão `pg` direta, independente do ORM, para inspecionar o que foi de fato gravado. */
 export function createProbe(max = 4): pg.Pool {
   return new pg.Pool({ connectionString: requireEnv('DATABASE_URL'), max });
+}
+
+export interface TemporaryDatabase {
+  url: string;
+  drop(): Promise<void>;
+}
+
+/** Banco vazio e descartável, para o teste que precisa mexer no schema sem tocar no compartilhado. */
+export async function createEmptyDatabase(): Promise<TemporaryDatabase> {
+  const name = `wager_tmp_${uuid().replaceAll('-', '').slice(0, 16)}`;
+  const admin = async (statement: string): Promise<void> => {
+    const client = createProbe(1);
+    try {
+      await client.query(statement);
+    } finally {
+      await client.end();
+    }
+  };
+  await admin(`create database ${name}`);
+  const url = new URL(requireEnv('DATABASE_URL'));
+  url.pathname = `/${name}`;
+  return { url: url.toString(), drop: () => admin(`drop database ${name} with (force)`) };
 }
 
 /** Tabelas de negócio existentes (exclui a de controle do migrator). */
