@@ -13,7 +13,7 @@ Decisões, alternativas, trade-offs e limitações do serviço. A primeira parte
 - [Autenticação](#autenticação)
 - [Limitações conhecidas](#limitações-conhecidas)
 - [Detalhes](#detalhes)
-- [Regras e contratos](#regras-e-contratos): [estados](#máquina-de-estados-de-wagertransaction), [códigos de falha](#códigos-de-falha), [payloadHash](#idempotência-e-payloadhash)
+- [Regras e contratos](#regras-e-contratos): [estados](#máquina-de-estados-de-wagertransaction), [códigos de falha](#códigos-de-falha), [payloadHash](#idempotência-e-payloadhash), [limite do PENDING_REFERENCE](#limite-do-pending_reference)
 - [Registro de decisões por fase](#registro-de-decisões-por-fase):
   [0, base técnica](#fase-0--base-técnica-e-spike-de-compatibilidade) ·
   [1, domínio e wallet](#fase-1--domínio-e-wallet) ·
@@ -252,6 +252,20 @@ c35c7153b3f48996a7edd07ab2e00c8b4c871d1b2511ed96f6d5a3194fb0606a
 
 **Uso:** gravado em `wager_transactions.payload_hash` e em `inbox_messages.payload_hash`. Mesma chave e mesmo hash é replay; mesma chave e outro hash é conflito (`409`; na fila, DLQ).
 A transação interna `OPENING` usa o mesmo algoritmo, com `providerId = "internal"` e `roundId = gameId = "opening"`.
+
+#### Limite do PENDING_REFERENCE
+
+Vale para `REFUND`, `ROLLBACK` e `WIN`/`LOSS` com referência. Constantes em `src/domain/reference-retry-policy.ts`, não configuráveis em runtime.
+
+| Ponto | Valor | Natureza |
+| --- | --- | --- |
+| Limite | 1 avaliação na submissão + 8 reprocessamentos; a 9ª sem referência grava `REJECTED/REFERENCE_NOT_FOUND` e o evento | Escolha nossa (**estimativa**) |
+| Backoff | `min(60 s, 1 s · 2ⁿ⁻¹)` mais jitter de 0 a +50% | Escolha nossa (**estimativa**) |
+| Espera somada | 183 s sem jitter, até cerca de 274 s com jitter, mais o intervalo do worker (1 s entre passadas) | Calculado das constantes, não medido em produção |
+| Premissa | A desordem entre uma operação e a sua referência se resolve em segundos; alguns minutos cobrem atraso de fila e retry do provedor | **Hipótese, não medida** |
+
+**É um limite de tentativas, não um TTL por relógio.** Só conta a avaliação concluída. Se o reprocesso falha com erro, a transação SQL é desfeita, `attempts` não muda e a pendência volta após o lease de 30 s, **sem teto**; com o worker parado, o prazo também não corre.
+Prova do limite: `test/integration/pending-reference-worker.test.ts`. Justificativa de cada número: "PENDING_REFERENCE e o worker" (Fase 3).
 
 ### Registro de decisões por fase
 
@@ -647,7 +661,7 @@ Defesa em profundidade se dois workers chegarem à mesma transação: o lock da 
 | Espera até a próxima (sem jitter) | 1s | 2s | 4s | 8s | 16s | 32s | 60s (teto) | 60s |
 
 A 9ª avaliação, se ainda sem referência, grava `REJECTED/REFERENCE_NOT_FOUND` (com o saldo observado). Total sem jitter: **183 s**; com jitter, de 3 a ~4,5 min.
-Justificativa: desordem real entre `BET` e reversão costuma ser de milissegundos a poucos segundos (reenvio do provedor, atraso de fila), então as primeiras esperas curtas resolvem o caso comum quase de imediato;
+Justificativa (premissa não medida): supomos que a desordem entre `BET` e reversão seja de milissegundos a poucos segundos (reenvio do provedor, atraso de fila), caso em que as primeiras esperas curtas resolvem quase de imediato;
 o teto de 60 s limita a carga do polling a no máximo uma reavaliação por minuto por transação parada; o jitter espalha reprocessos que nasceram juntos (uma rajada pós-incidente) para não voltarem todos no mesmo instante;
 alguns minutos cobrem atraso de fila e um ciclo de retry do provedor sem manter uma transação indefinidamente em aberto. Os números são estimativas, não medições: constantes em `src/domain/reference-retry-policy.ts` (não são configuráveis em runtime).
 Custo assumido: uma referência que chegue depois desse prazo leva à rejeição e o provedor precisa enviar a referência e uma **nova** reversão (a antiga é terminal e não é retomada).
@@ -701,7 +715,7 @@ Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) em todos 
 - Agendamento e lease usam o relógio da aplicação. Entre instâncias, um desvio de relógio desloca os vencimentos em segundos, o que não afeta correção (a exclusão mútua é do lock e do claim, não do relógio).
 - `GET` de uma transação `PENDING_REFERENCE` devolve `balance: null` (não há saldo observado ainda).
 - O log do worker (`pending_reference_settled`, com `transactionId`, `walletId`, `providerId`, `status`) e a contagem por status entraram na Fase 6; não há métrica própria do tempo de espera por referência.
-- Se a referência nunca chegar, a linha vira `REJECTED` em ~4 min: a tabela não acumula pendências eternas, mas o provedor precisa reagir ao `REFERENCE_NOT_FOUND`.
+- Se a referência nunca chegar, a linha vira `REJECTED` após cerca de 3 a 4,5 min (desde que os reprocessos concluam, ver "Limite do PENDING_REFERENCE"): em operação normal a tabela não acumula pendências eternas, mas o provedor precisa reagir ao `REFERENCE_NOT_FOUND`.
 
 ---
 
