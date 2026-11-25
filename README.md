@@ -68,6 +68,9 @@ O MiniStack não guarda as filas: **depois de reiniciar os containers, rode `bun
 
 Todas têm padrão no código; não precisam estar no `.env`.
 
+<details>
+<summary>Ver as variáveis opcionais e os padrões</summary>
+
 | Variável | Padrão | Significado |
 | --- | --- | --- |
 | `PORT` | `3000` | Porta HTTP |
@@ -83,6 +86,8 @@ Todas têm padrão no código; não precisam estar no `.env`.
 | `OUTBOX_BATCH_SIZE` | `50` | Eventos reivindicados por passada |
 | `OUTBOX_LEASE_MS` | `30000` | Reserva de um evento reivindicado |
 | `HEALTH_CHECK_TIMEOUT_MS` | `2000` | Prazo de cada dependência no readiness |
+
+</details>
 
 ## Comandos
 
@@ -340,6 +345,9 @@ TX_ID=be935f1f-15ad-4d95-82d4-65734d8d10b5   # use o "transactionId" da sua resp
 curl -s -w '\nHTTP %{http_code}\n' $BASE/wagering/transactions/$TX_ID
 ```
 
+<details>
+<summary>Ver a resposta (HTTP 200)</summary>
+
 ```
 {
   "transactionId": "be935f1f-15ad-4d95-82d4-65734d8d10b5",
@@ -360,6 +368,8 @@ curl -s -w '\nHTTP %{http_code}\n' $BASE/wagering/transactions/$TX_ID
 HTTP 200
 ```
 
+</details>
+
 Também pela identidade no provedor:
 
 ```bash
@@ -375,6 +385,9 @@ O primeiro lançamento é o crédito de abertura da wallet. A paginação usa `l
 ```bash
 curl -s -w '\nHTTP %{http_code}\n' "$BASE/wallets/$WALLET_ID/ledger?limit=10"
 ```
+
+<details>
+<summary>Ver a resposta (HTTP 200)</summary>
 
 ```
 {
@@ -402,6 +415,8 @@ curl -s -w '\nHTTP %{http_code}\n' "$BASE/wallets/$WALLET_ID/ledger?limit=10"
 }
 HTTP 200
 ```
+
+</details>
 
 ### Reconciliação
 
@@ -461,6 +476,9 @@ curl -s -w '\nHTTP %{http_code}\n' $BASE/providers/provider-a/wagering/transacti
 curl -s -w '\nHTTP %{http_code}\n' $BASE/wallets/$WALLET_ID
 ```
 
+<details>
+<summary>Ver as respostas: a transação e a wallet (HTTP 200)</summary>
+
 ```
 {
   "transactionId": "d1a99407-d56b-4367-a512-5ad1981ac858",
@@ -488,6 +506,8 @@ HTTP 200
 HTTP 200
 ```
 
+</details>
+
 ### Métricas
 
 Formato texto do Prometheus. O filtro abaixo omite os comentários e os buckets dos histogramas:
@@ -495,6 +515,9 @@ Formato texto do Prometheus. O filtro abaixo omite os comentários e os buckets 
 ```bash
 curl -s $BASE/metrics | grep -E '^(wager_|outbox_)' | grep -v _bucket
 ```
+
+<details>
+<summary>Ver a resposta</summary>
 
 ```
 wager_transactions_total{status="PROCESSED",kind="BET"} 1
@@ -509,6 +532,8 @@ wager_processing_duration_seconds_count 3
 wager_reconciliation_divergence_total 0
 wager_outbox_lag_seconds 0
 ```
+
+</details>
 
 ## Autenticação
 
@@ -553,6 +578,9 @@ Detalhes:
 
 ## Estrutura de pastas
 
+<details>
+<summary>Ver a árvore de pastas</summary>
+
 ```
 .
 ├── src/
@@ -582,6 +610,8 @@ Detalhes:
 ├── docker-compose.yml       # PostgreSQL e MiniStack
 └── .env.example
 ```
+
+</details>
 
 ## Limitações conhecidas
 
