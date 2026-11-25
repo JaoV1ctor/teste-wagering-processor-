@@ -42,7 +42,7 @@ PostgreSQL é a única fonte de verdade e o árbitro da concorrência; nenhuma g
 ```
 POST /wagering/transactions ─┐
                              ├─> ProcessWagerTransactionUseCase
-wager-transactions.fifo ─────┘     chave já conhecida? replay ou conflito, sem lock de wallet
+wager-transactions.fifo ─────┘     chave já conhecida do provedor? replay ou conflito, sem lock de wallet
                                    BEGIN
                                      inbox (só SQS) ─> lock da wallet ─> transação ─> saldo + ledger ─> outbox
                                    COMMIT ─> só então resposta HTTP ou ack
@@ -61,8 +61,8 @@ Os testes de integração e de concorrência usam Postgres e MiniStack reais. A 
 | --- | --- | --- |
 | Dinheiro nunca é `number` | `Money` (`bigint` em centavos), strings decimais nas bordas, `NUMERIC(19,2)`, regra de lint em `src/` | `test/unit/money.test.ts`, `test/unit/money-lint.test.ts` |
 | Corrida não produz saldo negativo | Lock por wallet antes de decidir, regra no domínio e `CHECK (balance >= 0)` | `test/concurrency/wager-transactions.test.ts` (duas apostas de 80,00 em 100,00; 30 de 10,00 em 100,00), `test/integration/schema.test.ts` |
-| Sem débito ou crédito duplicado | `UNIQUE` da chave e do id externo, um lançamento por transação e wallet, no máximo uma reversão efetiva (índice parcial) | `test/concurrency/wager-transactions.test.ts` (mesma `BET` x50), `test/concurrency/reversals.test.ts`, `test/concurrency/sqs-consumer.test.ts` |
-| Idempotência no banco | `INSERT ... ON CONFLICT (idempotency_key)`, `payloadHash` separa replay de conflito; inbox com `PK (consumer_name, message_id)` | `test/integration/process-wager-transaction.test.ts`, `test/integration/process-wager-inbox.test.ts`, `test/concurrency/outbox.test.ts` (replay depois de reiniciar o serviço) |
+| Sem débito ou crédito duplicado | `UNIQUE` por provedor da chave e do id externo, um lançamento por transação e wallet, no máximo uma reversão efetiva (índice parcial) | `test/concurrency/wager-transactions.test.ts` (mesma `BET` x50), `test/concurrency/reversals.test.ts`, `test/concurrency/sqs-consumer.test.ts` |
+| Idempotência no banco | `INSERT ... ON CONFLICT (provider_id, idempotency_key)`, `payloadHash` separa replay de conflito; inbox com `PK (consumer_name, message_id)` | `test/integration/process-wager-transaction.test.ts`, `test/integration/process-wager-inbox.test.ts`, `test/concurrency/outbox.test.ts` (replay depois de reiniciar o serviço) |
 | Correto com várias instâncias | Exclusão mútua por lock de linha; publisher e worker dividem trabalho por lease com `SKIP LOCKED`; nada em memória | `test/concurrency/wager-multiprocess.test.ts` (3 processos), `test/concurrency/reversals.test.ts`, `test/concurrency/outbox.test.ts` |
 | Evento só depois do commit, sem perda | Transactional outbox na mesma transação do fato; publisher só enxerga o commitado; entrega at-least-once | `test/integration/outbox-publisher.test.ts`, `test/integration/outbox-atomicity.test.ts`, `test/concurrency/outbox.test.ts` |
 | Ledger imutável e auditável | Triggers contra `UPDATE`, `DELETE` e `TRUNCATE`, cadeia `before`/`after`, saldo conferido no `COMMIT`, reconciliação por API | `test/integration/schema.test.ts`, `test/integration/reconciliation.test.ts` |
@@ -73,8 +73,8 @@ Os testes de integração e de concorrência usam Postgres e MiniStack reais. A 
 | Comando | Cobre | Resultado |
 | --- | --- | --- |
 | `bun run check` | tipos, lint e testes de unidade | 467 testes em 33 arquivos, 0 falhas |
-| `bun run test:integration` | Postgres e MiniStack reais | 430 testes em 40 arquivos, 0 falhas |
-| `bun run test:concurrency` | paralelismo e processos reais | 23 testes em 7 arquivos, 0 falhas |
+| `bun run test:integration` | Postgres e MiniStack reais | 441 testes em 41 arquivos, 0 falhas |
+| `bun run test:concurrency` | paralelismo e processos reais | 26 testes em 8 arquivos, 0 falhas |
 
 ## Decisões transversais
 
@@ -147,7 +147,7 @@ Desenho que adotaríamos:
 5. `/health/*` e `/metrics` ficam abertos, restritos por rede.
 6. A **fila é canal interno confiável**: quem pode produzir é controlado pela política da fila (IAM), não por token na mensagem. A identidade contida na mensagem continua passando pelas mesmas validações do HTTP (formato, referência resolvida dentro do provedor, player e moeda da wallet).
 
-Como o `providerId` entra no `payloadHash`, um replay só devolve o resultado a quem envia o mesmo `providerId`. A `idempotencyKey`, porém, é única no serviço inteiro: um provedor que use a chave de outro recebe `409`.
+Como o `providerId` entra no `payloadHash`, um replay só devolve o resultado a quem envia o mesmo `providerId`. A `idempotencyKey` vale dentro do provedor: a chave usada por um não ocupa a de outro. Sem autenticação, porém, quem declara o `providerId` de outro age como ele.
 
 ### Ponto de extensão no código
 
@@ -174,8 +174,9 @@ Resumo; o detalhe e a justificativa da maioria estão na seção de cada fase.
 - **Chave de idempotência:** o header HTTP tem os espaços das pontas removidos; `data.idempotencyKey` da fila não.
 - **Contratos:** `POST /wallets` não é idempotente (repetir dá `409`); o `providerId` `internal` não é reservado; não há `statement_timeout`.
 - **Testes de abuso:** `bun run test:security`; casos, achados e o que não foi coberto em [docs/SECURITY_TESTS.md](SECURITY_TESTS.md).
-- **Entre provedores:** como a chave de idempotência é única no serviço, um provedor pode ocupar antes a chave de outro, que passa a receber `409`. Sem vazamento de dados; corrigir exige migration.
-- **Pool de conexões:** requisições suficientes contra uma wallet travada prendem todas as conexões de uma instância; as outras wallets esperam e o readiness responde `503`.
+- **`messageId` entre provedores:** na fila, a deduplicação do inbox é por `(consumidor, messageId)`, não por provedor: quem publicar antes um `messageId` faz a mensagem legítima com o mesmo id ir à DLQ. A fila é tratada como canal interno; produtores precisam de ids únicos entre si.
+- **Pool de conexões (wallet travada):** requisições suficientes contra uma wallet travada deixam as 10 conexões de uma instância esperando o lock; as outras wallets esperam e `/health/ready` responde `503`, embora a instância esteja saudável. Evolução, não implementada: teto de requisições em voo por wallet dentro da instância, `statement_timeout` para limitar a espera total e uma conexão dedicada ao readiness.
+- **Migration da chave por provedor:** a constraint é criada com a tabela bloqueada, e a versão anterior da aplicação (`ON CONFLICT (idempotency_key)`) falha contra o schema novo: aplicar exige parar as instâncias. O `down` só é possível enquanto nenhuma chave tiver sido usada por dois provedores; depois disso falha explicitamente, porque transações não se apagam nem se reescrevem.
 - **Segurança:** sem autenticação; `/metrics` e health abertos; a aplicação conecta como dona das tabelas, e quem tem esse papel pode desligar triggers (não há papel restrito de banco).
 - **Escala:** escritas na mesma wallet são serializadas e, na máquina medida, a hot wallet ficou bem abaixo da carga distribuída; o `lock_timeout` não limita a espera total nessa fila; o publisher do outbox publicou mais devagar do que os eventos eram gravados. Medição local e curta, sem valor de capacidade, em [docs/LOAD_TEST.md](LOAD_TEST.md). Prazos, lotes e backoffs continuam estimativas. Ver [Fase 2](#fase-2--betwinloss-por-http-idempotência-e-lock).
 - **Reversões e referências:** sem reversão parcial; referência que não chega em cerca de 3 a 4,5 minutos vira `REJECTED`, mas um reprocesso que só falha com erro não tem teto de tentativas. Ver [Limite do PENDING_REFERENCE](#limite-do-pending_reference).
@@ -222,7 +223,7 @@ Cada item da lista de testes obrigatórios do enunciado e onde ele é provado. N
 
 | Item do enunciado | Arquivo e teste |
 | --- | --- |
-| Migrations | `test/integration/migration.test.ts`: "migration up → down → up (reversível)" |
+| Migrations | `test/integration/migration.test.ts`: "up → down → up das duas migrations (reversíveis)" |
 | Constraints | `test/integration/schema.test.ts`: "Constraints básicas"; "Ledger imutável e encadeado, wallet: version e consistência"; "Idempotência, estados terminais e reversão única"<br>`test/integration/schema-constraints.test.ts`: "recusa %s"; "coluna de identidade %s é imutável, mesmo em transação não terminal"; "inbox: a mesma messageId não entra duas vezes no mesmo consumidor" |
 | Atomicidade entre wallet, ledger, inbox e outbox | `test/integration/sqs-processing-atomicity.test.ts`: "wallet, ledger, inbox e outbox não persistem; a reentrega grava os quatro uma única vez"<br>`test/integration/outbox-atomicity.test.ts`: "falha ao gravar o evento: a pendência não é resolvida, o saldo não muda e não sobra evento órfão"<br>`test/integration/create-wallet-atomicity.test.ts`: "falha ao gravar o evento: wallet, OPENING, lançamento e eventos não permanecem (evento e fato são um só commit)" |
 | Inbox e redelivery | `test/integration/process-wager-inbox.test.ts`: "a mesma mensagem entregue 20 vezes ao mesmo tempo debita uma vez"<br>`test/integration/sqs-consumer.test.ts`: "mesma messageId entregue duas vezes com o mesmo corpo: um débito, a 2ª é duplicata do inbox"; "redelivery com messageId NOVA e a mesma idempotencyKey: replay pela idempotência, um débito" |
@@ -285,7 +286,7 @@ Fonte: `src/domain/failure-code.ts` (12 códigos). A ordem de precedência das r
 
 - **HTTP:** vale para a submissão e para o replay. A consulta (`GET`) responde `200` com `status` e `failureCode`. Pela fila não há status: a mensagem recebe ack e a rejeição sai no evento `WagerTransactionRejected`.
 - **Reenviar:** nenhum `failureCode` se resolve reenviando a mesma requisição, que devolve o mesmo resultado. Reenvio é para `503` (e, na fila, a mensagem sem ack).
-- **Corrigir:** é uma **nova** transação, com `externalTransactionId` e `Idempotency-Key` novos. Mesma chave com payload corrigido, ou mesmo id externo com outra chave, dá `409`.
+- **Corrigir:** é uma **nova** transação, com `externalTransactionId` e `Idempotency-Key` novos. No mesmo provedor, a mesma chave com payload corrigido, ou o mesmo id externo com outra chave, dá `409`.
 - **Desistir:** não há payload que mude o resultado daquela operação naquele momento.
 
 | Código | Quando ocorre | HTTP | O que o provedor faz |
@@ -328,8 +329,12 @@ c35c7153b3f48996a7edd07ab2e00c8b4c871d1b2511ed96f6d5a3194fb0606a
 
 **UUIDs:** como a normalização vem antes do hash, a mesma operação com outra caixa é replay. Não há migração de hashes: um registro gravado antes da normalização, a partir de UUID em maiúsculas, teria outro hash, e o reenvio daria conflito.
 
-**Uso:** gravado em `wager_transactions.payload_hash` e em `inbox_messages.payload_hash`. Mesma chave e mesmo hash é replay; mesma chave e outro hash é conflito (`409`; na fila, DLQ).
+**Uso:** gravado em `wager_transactions.payload_hash` e em `inbox_messages.payload_hash`. No mesmo provedor, mesma chave e mesmo hash é replay; mesma chave e outro hash é conflito (`409`; na fila, DLQ).
 A transação interna `OPENING` usa o mesmo algoritmo, com `providerId = "internal"` e `roundId = gameId = "opening"`.
+
+**Escopo da chave: o provedor.** `UNIQUE (provider_id, idempotency_key)` (`wt_provider_idempotency_key_uq`); toda busca por chave filtra também por `provider_id`, e dois provedores com a mesma chave são independentes. `UNIQUE (provider_id, external_transaction_id)` não mudou.
+A primeira versão do schema tinha a chave única no serviço inteiro: um provedor que usasse a chave de outro deixava o dono em `409` permanente. A correção é a migration `Migration20261125000000_idempotency_per_provider` (`db/002_idempotency_per_provider.up.sql` e `db/002_idempotency_per_provider.down.sql`); exigir prefixo na chave foi descartado, porque a chave é do provedor e o enunciado só recomenda um formato.
+O `down` restaura a constraint global; havendo uma chave usada por mais de um provedor, falha com a mensagem `a unicidade global não pode ser restaurada` e nada muda. Provas: `test/integration/idempotency-scope.test.ts`, `test/concurrency/idempotency-scope.test.ts`, `test/integration/migration.test.ts`.
 
 #### Limite do PENDING_REFERENCE
 
@@ -357,8 +362,8 @@ Pontos que o enunciado deixa em aberto ou ambíguos, e a leitura adotada.
 | 4 | Referência ainda pendente | Quem depende dela também espera | Fase 3 |
 | 5 | Resolução da referência | Por `(providerId, referenceExternalTransactionId)`: o mesmo id em outro provedor não é a referência | Fase 3 |
 | 6 | Replay | Mesmo status HTTP e `failureCode`, saldo observado na época; replay de pendente devolve o estado atual | Fases 2 e 3 |
-| 7 | Duas chaves de unicidade | Mesmo `(providerId, externalTransactionId)` com outra chave é conflito `409` | Fase 2 |
-| 8 | `Idempotency-Key` | Obrigatória; o formato `{providerId}:{externalTransactionId}` é recomendação, não exigência | Fase 2 |
+| 7 | Duas chaves de unicidade | Ambas por provedor; mesmo `(providerId, externalTransactionId)` com outra chave é conflito `409` | Fase 2 |
+| 8 | `Idempotency-Key` | Obrigatória; o formato `{providerId}:{externalTransactionId}` é recomendação, não exigência; o escopo é o provedor | Idempotência e payloadHash |
 | 9 | Wallet inexistente | `404`, nada gravado | Fase 2 |
 | 10 | Player ou moeda divergentes | Rejeição auditável (`422`); precedência: player, moeda, referência, saldo | Fases 2 e 3 |
 | 11 | Crédito acima do máximo | Código próprio, `BALANCE_LIMIT_EXCEEDED`, em vez de erro `500` | Fase 3 |
@@ -371,6 +376,7 @@ Pontos que o enunciado deixa em aberto ou ambíguos, e a leitura adotada.
 | 18 | Divergência na reconciliação | Resposta `200` com `consistent: false`, log e métrica; nunca corrige | Fase 6 |
 | 19 | Caixa dos UUIDs | Normalizados para minúsculas uma vez, na borda (`uuidSchema`, `src/interface/http/wallets.dto.ts`): `playerId` e `walletId` no HTTP e na mensagem SQS, e `:walletId` e `:transactionId` nas rotas. O `payloadHash` usa o valor já normalizado. Ids que não são UUID (`idempotencyKey`, `externalTransactionId`, `referenceExternalTransactionId` e os demais) ficam como chegaram. O `MessageGroupId` não passa pela borda: o produtor deve normalizar o `walletId` antes de escolhê-lo. Provas em `test/unit/uuid-case.test.ts`, `test/integration/uuid-case.test.ts` e `test/unit/send-wager-message.test.ts` | Idempotência e payloadHash |
 | 20 | Texto que não pode ser armazenado | U+0000 e surrogate UTF-16 solto em qualquer texto de entrada são recusados na borda (`textSchema`, `src/interface/http/wallets.dto.ts`): `400` no HTTP, DLQ `MALFORMED_MESSAGE` na fila. Os demais caracteres Unicode são aceitos e gravados como vieram | Mapeamento HTTP |
+| 21 | Mesma chave em provedores diferentes | Transações independentes; o enunciado não diz o escopo da chave, e o global permitia que um provedor bloqueasse outro | Idempotência e payloadHash |
 
 ### Registro de decisões por fase
 
@@ -441,7 +447,7 @@ Observação medida (3 rodadas de 30 apostas): com a ordem errada, `FOR UPDATE` 
 ##### Limitações da Fase 0
 
 - `.env` é local e ignorado pelo git; copie `.env.example`, que tem só as chaves, e preencha com valores de desenvolvimento compatíveis com o `docker-compose.yml`. `requireEnv` falha cedo se faltar variável.
-- A migration roda em transação única; `down` apaga todos os dados do schema (esperado em dev; **nunca** rodar contra dados reais).
+- Cada migration roda em transação; `bun run migration:down` desfaz uma por vez, e o `down` da inicial apaga todos os dados do schema (esperado em dev; **nunca** rodar contra dados reais).
 - O banco de testes acumula linhas entre execuções (UUIDs aleatórios, sem colisão). Isolamento por banco/schema fica para quando a suíte crescer.
 
 ---
@@ -588,15 +594,15 @@ Um único `ProcessWagerTransactionUseCase` concentra a regra; o controller só t
 ```
 0. Validação na borda (zod + Money): Idempotency-Key obrigatória; kind em {BET, WIN, LOSS}; amount > 0, no máximo 2 casas
 1. payloadHash = SHA-256 do JSON canônico dos campos de negócio
-2. Fast-path SEM lock: SELECT por idempotency_key
+2. Fast-path SEM lock: SELECT por (provider_id, idempotency_key)
      existe: mesmo hash -> REPLAY (mesmo status HTTP e corpo, idempotentReplay=true) | hash diferente -> 409 IDEMPOTENCY_CONFLICT
      (entrada SQS: o replay ainda passa pelo inbox numa transação curta, ver "Fase 4")
 3. BEGIN
 4. lockWallet:  SELECT id FROM wallets WHERE id = ? FOR NO KEY UPDATE     <- primeira instrução que toca a wallet
      inexistente -> ROLLBACK, 404 WALLET_NOT_FOUND, nada gravado
 5. Decisão em memória (domínio, settleWager): a transação nasce PENDING e termina PROCESSED ou REJECTED(code), com observed_balance
-6. INSERT wager_transactions ... ON CONFLICT (idempotency_key) DO NOTHING RETURNING id        <- gravada UMA vez, já no estado final
-     sem linha retornada: a chave já existia -> relê o vencedor: mesmo hash -> REPLAY | diferente -> 409
+6. INSERT wager_transactions ... ON CONFLICT (provider_id, idempotency_key) DO NOTHING RETURNING id        <- gravada UMA vez, já no estado final
+     sem linha retornada: o provedor já usou a chave -> relê o vencedor: mesmo hash -> REPLAY | diferente -> 409
      violação de wt_external_id_uq (mesmo provedor+id externo, outra chave) -> 23505 -> 409
 7. Se o saldo mudou (BET/WIN processadas): UPDATE wallets (balance, version+1) -> INSERT wallet_ledger_entries
 8. COMMIT; só então responde
@@ -629,7 +635,7 @@ e isso é testado: um id malicioso é recusado pelo banco como uuid inválido e 
 Bind real (`$1`) exigiria o `sql` do Kysely, hoje dependência transitiva do MikroORM; não adotamos para não declarar uma dependência nova só para isso.
 
 **2. Idempotência só no banco.** Três camadas, nenhuma depende de memória do processo:
-(a) fast-path por `idempotency_key` sem lock, só para não disputar a wallet em replays; (b) `UNIQUE (idempotency_key)` decide a corrida via `ON CONFLICT DO NOTHING`;
+(a) fast-path por `(provider_id, idempotency_key)` sem lock, só para não disputar a wallet em replays; (b) `UNIQUE (provider_id, idempotency_key)` decide a corrida via `ON CONFLICT DO NOTHING` (era global até a correção descrita em "Idempotência e payloadHash");
 (c) `UNIQUE (provider_id, external_transaction_id)` barra a mesma identidade do provedor com outra chave (`23505` vira `IdempotencyConflictError` e 409).
 Replay e conflito são separados por `payloadHash`.
 
@@ -638,7 +644,7 @@ Replay e conflito são separados por `payloadHash`.
 `amount` já vem normalizado com 2 casas por `Money.toProps()`. A `Idempotency-Key` e metadados de transporte ficam fora. O algoritmo tem teste com vetor fixo calculado fora do código (`payload-hash.test.ts`).
 `referenceExternalTransactionId` não entrava no hash na Fase 2, porque era rejeitado; a Fase 3 o inclui quando presente (ver "Fase 3").
 
-Corridas da mesma chave: na **mesma wallet**, o lock as serializa e a 2ª encontra a chave já commitada (replay). Em **wallets diferentes**, o índice único faz a 2ª inserção esperar o commit da 1ª,
+Corridas da mesma chave de um provedor: na **mesma wallet**, o lock as serializa e a 2ª encontra a chave já commitada (replay). Em **wallets diferentes**, o índice único faz a 2ª inserção esperar o commit da 1ª,
 retornar sem linha e reler: o hash difere (a wallet está no hash), então 409; coberto em `process-wager-transaction.test.ts`. Não há deadlock: quem espera no índice só segura a própria wallet, e quem o segura não precisa dela.
 
 **3. Transação gravada uma vez, no estado final.** A decisão (`settleWager`, domínio puro) acontece em memória, com a wallet travada; o `INSERT` já leva `status`, `failure_code`, `observed_balance` e `processed_at`.
@@ -690,7 +696,7 @@ O mesmo `ProcessWagerTransactionUseCase` serve a submissão; o worker usa a **me
 
 ```
 Submissão (HTTP; SQS na Fase 4)                         Worker (runOnce)
-1. fast-path por idempotency_key (replay/409)           1. CLAIM (transação curta, sem wallet):
+1. fast-path por (provider_id, chave) (replay/409)      1. CLAIM (transação curta, sem wallet):
 2. BEGIN; set_config('lock_timeout', '3000ms', true)       WITH due AS (SELECT ... WHERE status='PENDING_REFERENCE'
 3. LOCK wallet (FOR NO KEY UPDATE)  <- 1ª instrução          AND next_attempt_at <= now ORDER BY next_attempt_at
 4. settleLocked: lê a referência por                         LIMIT n FOR UPDATE SKIP LOCKED)
@@ -840,7 +846,7 @@ ReceiveMessage (long polling 20 s, lote <= 10, VisibilityTimeout configurável)
        └─ WagerMessageHandler.handle(body, ApproximateReceiveCount)
             1. parseWagerMessage (zod): envelope + data. type desconhecido ou payload inválido => erro PERMANENTE
             2. ProcessWagerTransactionUseCase.execute(command, { consumerName, messageId })
-                 fast-path por idempotencyKey (sem lock): a chave já existe?
+                 fast-path por (providerId, idempotencyKey), sem lock: o provedor já usou a chave?
                  BEGIN
                    INSERT inbox (consumer_name, message_id, payload_hash) ON CONFLICT DO NOTHING   <- mesma transação do efeito
                      já existe, mesmo hash  => COMMIT, resultado `duplicateMessage`
@@ -894,9 +900,9 @@ Toda mensagem confirmada por resultado do caso de uso (`PROCESSED`, `REJECTED`, 
 | Entrega | Resultado |
 | --- | --- |
 | Mesma `messageId`, mesmo hash dos campos de negócio (redelivery depois do commit) | duplicata do inbox: ack |
-| `messageId` nova, chave conhecida, mesmo hash dos campos de negócio | replay: ack, e a nova `messageId` passa a constar no inbox |
+| `messageId` nova, chave já usada pelo provedor, mesmo hash dos campos de negócio | replay: ack, e a nova `messageId` passa a constar no inbox |
 | `messageId` já registrada, outro hash dos campos de negócio (chave nova **ou** conhecida) | `INBOX_PAYLOAD_CONFLICT`: DLQ, nada é debitado |
-| `messageId` nova, chave conhecida, outro hash dos campos de negócio | `IDEMPOTENCY_CONFLICT`: DLQ, nada gravado (nem a linha do inbox) |
+| `messageId` nova, chave já usada pelo provedor, outro hash dos campos de negócio | `IDEMPOTENCY_CONFLICT`: DLQ, nada gravado (nem a linha do inbox) |
 
 **Só os campos de negócio contam** (os do `payloadHash`, ver "Idempotência e payloadHash"). A mesma `messageId` em que mudaram apenas metadados, como `idempotencyKey` ou `occurredAt`, é **duplicata**: ack, nada é reprocessado e a chave nova não é registrada.
 
