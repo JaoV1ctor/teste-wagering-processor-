@@ -21,10 +21,3 @@ services:
     ports: ["4566:4566"]
     environment:
       AWS_DEFAULT_REGION: us-east-1
-    healthcheck:
-      # Saudável = a porta 4566 aceita conexão. A imagem não tem curl nem wget; o /dev/tcp é do bash.
-      # Substitui o healthcheck declarado pela imagem, que consulta /_ministack/health por HTTP.
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4566"]
-      interval: 3s
-      timeout: 3s
-      retries: 20

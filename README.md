@@ -49,7 +49,7 @@ O [`.env.example`](.env.example) já vem com os valores do ambiente local do `do
 Depois, nesta ordem:
 
 ```bash
-docker compose up -d --wait    # sobe os containers e espera os healthchecks (no MiniStack: porta 4566 aceitando conexão)
+docker compose up -d --wait    # sobe os containers e espera ficarem saudáveis (MiniStack: healthcheck da própria imagem)
 bun run infra:queues           # espera o MiniStack responder (até 30 s) e cria as três filas
 bun run migration:up           # cria o schema
 bun run start                  # aplicação em http://localhost:3000 (ocupa o terminal)
