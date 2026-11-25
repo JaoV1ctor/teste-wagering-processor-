@@ -220,6 +220,78 @@ describe('recuperação por lease', () => {
   });
 });
 
+describe('publisher atrasado, com o lease vencido, falha depois de outro reivindicar', () => {
+  /** Publisher cujo envio fica pendurado até o teste mandar falhar (a rede travou e estourou o prazo bem depois do lease). */
+  function hangingPublisher() {
+    let started!: () => void;
+    let fail!: () => void;
+    const sending = new Promise<void>((resolve) => { started = resolve; });
+    const released = new Promise<void>((resolve) => { fail = resolve; });
+    const publisher: EventPublisher = {
+      publish: async () => {
+        started();
+        await released;
+        throw new Error('envio estourou o prazo');
+      },
+    };
+    return { publisher, sending, fail: () => fail() };
+  }
+
+  const schedule = async (walletId: string) =>
+    (await outboxOfWallet(probe, walletId)).map((r) => ({ attempts: r.attempts, nextAttemptAt: r.next_attempt_at.getTime() }));
+
+  test('não sobrescreve o lease do segundo: ninguém reivindica o evento enquanto o segundo o tem', async () => {
+    const { walletId } = await seed(1);
+    const slow = hangingPublisher();
+    const first = publisherOf(slow.publisher, uow, { onError: () => undefined }).runOnce();
+    await slow.sending;
+
+    t += 30_001; // o lease do 1º venceu
+    const secondLease = t + 30_000;
+    expect(await uow.run(({ outbox }) => outbox.claimDue(new Date(t), 10, new Date(secondLease)))).toHaveLength(2);
+    slow.fail();
+    expect(await first).toEqual({ claimed: 2, published: 0, failed: 1, abandoned: 1 });
+
+    expect(await schedule(walletId)).toEqual(Array.from({ length: 2 }, () => ({ attempts: 0, nextAttemptAt: secondLease })));
+    t += 29_000; // depois do backoff que o 1º teria agendado, mas dentro do lease do 2º
+    expect(await publisherOf(realPublisher).runOnce()).toMatchObject({ claimed: 0 });
+  });
+
+  test('não desfaz as tentativas nem o backoff que o segundo já gravou', async () => {
+    const { walletId } = await seed(1);
+    const slow = hangingPublisher();
+    const first = publisherOf(slow.publisher, uow, { onError: () => undefined }).runOnce();
+    await slow.sending;
+    const down: EventPublisher = { publish: async () => { throw new Error('SQS fora'); } };
+    const second = publisherOf(down, uow, { onError: () => undefined });
+
+    t += 30_001;
+    expect(await second.runOnce()).toMatchObject({ claimed: 2, failed: 2 }); // attempts 1, próxima em 1 s
+    t += 1000;
+    expect(await second.runOnce()).toMatchObject({ claimed: 2, failed: 2 }); // attempts 2, próxima em 2 s
+    const scheduled = await schedule(walletId);
+    expect(scheduled.map((s) => s.attempts)).toEqual([2, 2]);
+    slow.fail();
+    await first;
+
+    expect(await schedule(walletId)).toEqual(scheduled);
+  });
+
+  test('sem ninguém ter reivindicado, a falha tardia ainda agenda o retry normalmente', async () => {
+    const { walletId } = await seed(1);
+    const slow = hangingPublisher();
+    const first = publisherOf(slow.publisher, uow, { onError: () => undefined }).runOnce();
+    await slow.sending;
+
+    t += 30_001;
+    slow.fail();
+    await first;
+
+    expect((await schedule(walletId)).map((s) => s.attempts).sort()).toEqual([0, 1]);
+    expect((await schedule(walletId)).find((s) => s.attempts === 1)?.nextAttemptAt).toBe(t + 1000);
+  });
+});
+
 describe('duplicata de publicação é segura e contada', () => {
   test('publicou mas não conseguiu marcar (crash entre o envio e o UPDATE): depois do lease sai de novo com o MESMO eventId', async () => {
     const { walletId, transactionIds } = await seed(1);

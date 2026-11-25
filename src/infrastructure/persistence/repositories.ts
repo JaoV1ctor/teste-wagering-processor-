@@ -225,10 +225,14 @@ export class MikroOrmOutboxRepository implements OutboxRepository {
     await this.em.nativeUpdate(OutboxMessageEntity, { id: message.id, publishedAt: null }, { publishedAt: message.publishedAt ?? null });
   }
 
-  async scheduleRetry(message: OutboxMessage): Promise<void> {
+  /**
+   * `next_attempt_at` faz o papel de token de posse, sem coluna nova: um novo claim só acontece com `next_attempt_at <= now` e grava
+   * `now + lease`, sempre um valor maior que o anterior. Se mudou desde o claim, outro publisher assumiu o evento.
+   */
+  async scheduleRetry(message: OutboxMessage, claimedUntil: Date): Promise<void> {
     await this.em.nativeUpdate(
       OutboxMessageEntity,
-      { id: message.id, publishedAt: null },
+      { id: message.id, publishedAt: null, nextAttemptAt: claimedUntil },
       { attempts: message.attempts, nextAttemptAt: message.nextAttemptAt },
     );
   }

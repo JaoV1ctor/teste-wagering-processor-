@@ -396,7 +396,7 @@ A garantia tem duas camadas independentes: a verificação sob o lock da wallet 
 **Claim por lease (SPEC D7).** `UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED LIMIT n) RETURNING` empurra `next_attempt_at` para `agora + 30s`. Dois workers recebem lotes disjuntos
 (`SKIP LOCKED`); a transação reivindicada some do filtro até o lease vencer, então ninguém a pega em dobro. Se o worker morrer, ela volta a ser elegível quando o lease vencer
 (teste `o claim agenda a transação para depois do lease`). O processamento roda **fora** do claim, como transação normal: não segura conexão nem lock durante o trabalho de outro.
-Defesa em profundidade se dois workers chegarem à mesma transação: o lock da wallet serializa, o 2º relê e vê que não é mais `PENDING_REFERENCE` (`skipped`), e o trigger barra qualquer UPDATE em terminal.
+Defesa em profundidade se dois workers chegarem à mesma transação: o lock da wallet serializa; se o 1º a resolveu, o 2º relê, vê que não é mais `PENDING_REFERENCE` (`skipped`), e o trigger barra qualquer UPDATE em terminal (se continuou pendente, ver "Limitações").
 
 **Limite e backoff (estimativa a justificar).** 1 avaliação inicial + **8 reprocessamentos**; a espera antes do reprocesso `n` é `min(60s, 1s · 2ⁿ⁻¹)` mais jitter uniforme de 0 a +50%:
 
@@ -453,6 +453,7 @@ Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) em todos 
 
 - **Resolvido na Fase 5**: `PendingReference`, `Rejected`, `Processed` e `BalanceChanged` são gravados no mesmo `uow.run`, como último passo, tanto na submissão quanto no reprocesso do worker.
 - O limite do worker é constante no domínio, não configurável. Medir o atraso real de referências (histograma) permitiria ajustá-lo com dados; **a Fase 6 não incluiu esse histograma** (só conta as transações resolvidas pelo worker em `wager_transactions_total`), então o ajuste continua por estimativa.
+- O claim das pendências não confere posse no reprocessamento: um worker que passe do lease sem a referência ter chegado reavalia depois de outro e consome uma tentativa a mais (o limite chega antes). Não afeta saldo, que é decidido sob o lock da wallet. Visto na leitura do código; não há teste para este caso.
 - O worker processa o lote em sequência. Uma wallet travada atrasa o lote por até ~9 s (3 tentativas de `lock_timeout`); a transação afetada volta após o lease, e as demais seguem. Paralelizar por wallet é possível e não foi necessário.
 - Sem ordem garantida entre pendências da mesma wallet: duas reversões pendentes da mesma `BET` são avaliadas na ordem do claim (`next_attempt_at`); qualquer uma pode ser a efetiva, e a outra é `ALREADY_REVERSED`. A regra "no máximo uma" vale; qual delas vence não é especificado.
 - Agendamento e lease usam o relógio da aplicação. Entre instâncias, um desvio de relógio desloca os vencimentos em segundos, o que não afeta correção (a exclusão mútua é do lock e do claim, não do relógio).
@@ -636,6 +637,7 @@ COMMIT; só então responde / dá ack                         FROM due ...      
                                                         2. SendMessage na fila padrão `wager-events`  (fora de qualquer transação)
                                                         3a. sucesso: UPDATE published_at = now WHERE published_at IS NULL   (transação curta)
                                                         3b. falha:   UPDATE attempts + 1, next_attempt_at = now + backoff   (transação curta)
+                                                             WHERE published_at IS NULL AND next_attempt_at = o lease deste claim
 ```
 
 Ordem global de locks e escritas: **wallet → transação → ledger → outbox**. O claim do publisher não toca wallet nem ledger, então não participa dessa ordem
@@ -680,6 +682,10 @@ Interpretações desta fase:
 Publishers concorrentes recebem lotes **disjuntos**, ninguém espera por linha alheia e nenhuma conexão ou lock fica preso durante I/O de rede. Se o publisher morrer depois do claim, o evento volta a ser elegível quando o lease vencer.
 Alternativa descartada: segurar o `SKIP LOCKED` durante o `SendMessage`: prende uma conexão por lote e, se o SQS ficar lento, o pool do serviço esgota.
 `markPublished` e `scheduleRetry` atualizam `WHERE published_at IS NULL`: um publisher lento, cujo lease já venceu, não atropela o resultado de quem publicou antes.
+
+**Posse do lease (correção após revisão independente).** `published_at IS NULL` não bastava para o retry: um publisher antigo que **falhasse** depois de outro reivindicar a linha reagendava por cima do lease do segundo (um terceiro podia pegar o evento enquanto o segundo o enviava) e regredia `attempts` e o backoff (reproduzido em teste).
+Agora `scheduleRetry` só grava se `next_attempt_at` ainda é o `leaseUntil` do próprio claim. Não precisou de coluna nova: um novo claim exige `next_attempt_at <= now` e grava `now + lease`, sempre maior que o anterior, então o valor funciona como token de posse. Sem ninguém ter reivindicado, a falha tardia agenda o retry normalmente.
+`markPublished` continua sem a condição de propósito: se o envio atrasado deu certo, o evento **foi** publicado e deve ser marcado. Alternativa descartada: coluna `claim_token` (migration sem ganho sobre o valor que já existe). Limite: a monotonicidade supõe que o relógio de uma instância não ande para trás.
 
 **3. Destino: fila SQS padrão `wager-events`** (SPEC D8). O README não define o destino. Fila padrão basta porque a correção do consumidor não depende de ordem nem de deduplicação do SQS: ele deduplica por `eventId` e ordena por `walletVersion`.
 A mensagem leva os atributos `eventId` e `eventType` e o corpo é o envelope. Alternativas: fila FIFO (a deduplicação do SQS dura 5 minutos e não cobre uma republicação depois de um lease longo, então o consumidor teria de deduplicar mesmo assim) e SNS (um salto a mais sem necessidade aqui).
@@ -730,7 +736,7 @@ Postgres e MiniStack **reais** em todos os testes de integração e concorrênci
 | Camada | Arquivos | O que prova |
 | --- | --- | --- |
 | Unidade | `integration-events`, `integration-events-for`, `outbox-message`, `outbox-config`, `mappers`, `polling-worker`, `app-shutdown`, `wagering-dto`, `wager-message-handler` | Envelope e payload dos 4 eventos (`eventType`/`version` no tipo, strings, `toJSON`); quais eventos nascem de cada resultado (LOSS sem `BalanceChanged`, reagendamento sem evento novo, limite esgotado = `Rejected`); estados de `OutboxMessage` e backoff; config por env; shutdown na ordem certa; `correlationId` |
-| Integração | `outbox-events`, `outbox-atomicity`, `outbox-lock-order`, `outbox-repository`, `outbox-publisher` | Os 4 eventos pelo HTTP, SQS e worker, com payload e `correlationId`; falha em 5 pontos (inclusive no 2º evento) não deixa nada; ordem de escrita e claim sem wallet; claims disjuntos, linha travada pulada, lease; publicação na fila real, `published_at`, lote; SQS fora do ar com backoff 1 s→60 s sem perder o evento; recuperação por lease; lote lento; duplicata contada; **nenhuma mensagem antes do commit nem após rollback** |
+| Integração | `outbox-events`, `outbox-atomicity`, `outbox-lock-order`, `outbox-repository`, `outbox-publisher` | Os 4 eventos pelo HTTP, SQS e worker, com payload e `correlationId`; falha em 5 pontos (inclusive no 2º evento) não deixa nada; ordem de escrita e claim sem wallet; claims disjuntos, linha travada pulada, lease; publicação na fila real, `published_at`, lote; SQS fora do ar com backoff 1 s→60 s sem perder o evento; recuperação por lease; lote lento; falha tardia de um publisher com lease vencido; duplicata contada; **nenhuma mensagem antes do commit nem após rollback** |
 | Concorrência (processos reais) | `test/concurrency/outbox.test.ts` | **#6** dois publishers (processos) com uma linha travada por outra transação: 99 publicados, nenhum perdido, 0 duplicatas, e o último sai depois; publisher morto por `SIGKILL` depois de enviar e antes de marcar: outro republica, 0 perdidos, exatamente 1 duplicata contada. **#8** o serviço real (`bun run src/main.ts`) morre por `SIGKILL` depois do commit e antes de publicar; um novo serviço sobe e publica; `wallet == ledger == eventos`; o replay devolve o mesmo resultado (a idempotência sobreviveu ao reinício) e não gera evento |
 
 Invariante final (`wallet.balance == saldo reconstruído pelo ledger`, mais "todo `BalanceChanged` tem o lançamento correspondente e `walletVersion` fecha com a wallet") conferida em todos os cenários que mexem em saldo.
@@ -740,6 +746,7 @@ Invariante final (`wallet.balance == saldo reconstruído pelo ledger`, mais "tod
 | Mutação | Resultado |
 | --- | --- |
 | `outbox.add` também publica no SQS, **dentro** da transação (antes do commit) | Falham os dois testes "nunca antes do commit" (mensagens na fila com a transação aberta e depois do rollback) e 6 outros testes do publisher (a fila passa a ter cópias a mais) |
+| `scheduleRetry` sem a condição do lease (código anterior à correção) | Falham os 2 testes do publisher atrasado em `outbox-publisher` (lease do segundo sobrescrito; `attempts` regride de 2 para 1) |
 | Claim sem `SKIP LOCKED` (`FOR UPDATE` puro) | Falham o teste de linha travada do repositório (o claim espera o `lock_timeout` e dá erro), o teste de ordem de locks (que exige `skip locked` no SQL) e o **#6**. **Achado:** o #6 original **não** pegava a mutação, porque sem `SKIP LOCKED` o claim concorrente continua disjunto (espera e relê a linha já agendada); só perde vazão. Por isso o #6 segura uma linha travada durante a publicação: os publishers precisam pulá-la. |
 
 ### Limitações e pontos em aberto
@@ -919,3 +926,26 @@ Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) conferida
 - **Readiness não olha o consumidor, o worker nem o lag.** Ele diz que as dependências respondem; um consumidor travado por bug não derruba o readiness (a métrica de lag e os logs de erro é que sinalizam). `GetQueueUrl` prova alcance e existência da fila, não a permissão de enviar/receber.
 - **`correlationId` não é guardado na transação** (já registrado na Fase 5): o do reprocesso do worker é o id da transação.
 - **Sem dashboard, alertas nem OpenTelemetry** (non-goals da SPEC §1).
+
+---
+
+## Revisão independente: correções e limitações restantes
+
+Uma revisão por leitura estática (sem execução) apontou quatro pontos. Cada um foi primeiro reproduzido por um teste contra Postgres e MiniStack reais, depois corrigido, e o teste voltou a falhar com a correção desfeita.
+Os detalhes, as alternativas e os controles negativos estão na seção de cada fase.
+
+| Ponto | Reproduzido | Correção | Teste |
+| --- | --- | --- | --- |
+| O replay por idempotência contornava o inbox: a `messageId` podia voltar com outra transação e debitar | Sim | O replay por mensagem registra o inbox numa transação curta, sem lock de wallet (Fase 4) | `sqs-replay-inbox`, `process-wager-inbox` |
+| Uma mensagem adiada não segurava as seguintes do grupo: uma `BET` era rejeitada antes de o `WIN` anterior ser aplicado | Sim | A seguinte só começa se a anterior saiu da fila (Fase 4) | `sqs-group-order` |
+| Mensagem de exceção sem código ia para o log, inclusive com texto do produtor | Sim | Mensagem só para classes nossas de uma lista permitida (Fase 6, "Logs") | `logs`, `json-log` |
+| Publisher com lease vencido sobrescrevia o agendamento de quem reivindicou depois | Sim | `scheduleRetry` condicionado ao lease do próprio claim, sem migration (Fase 5) | `outbox-publisher` |
+
+Limitações que continuam, relacionadas a esses pontos:
+
+- **Inbox:** mensagem que vai à DLQ não fica registrada (a transação faz `ROLLBACK`); a tabela não tem retenção.
+- **Ordem por wallet:** vale para o que o consumidor já recebeu e depende de a FIFO bloquear o grupo com mensagem em voo (verificado só no MiniStack). Não sobrevive à DLQ (as seguintes podem ser aplicadas antes de um reprocesso), as devolvidas gastam recebimentos e podem ir à DLQ junto com a da frente, `PENDING_REFERENCE` não segura o grupo, o HTTP não tem ordem em relação à fila e não há heartbeat de visibilidade.
+- **Logs:** exceção que escape até o runtime e texto escrito por bibliotecas não passam pelo `logJson`; `correlationId`, `messageId` e `providerId` são registrados como o chamador os envia; erros genéricos ficam sem mensagem no log.
+- **Leases:** o worker de `PENDING_REFERENCE` não confere posse e pode consumir uma tentativa a mais; o publisher atrasado ainda pode gerar publicação duplicada (entrega at-least-once, deduplicada por `eventId`).
+
+As demais limitações (reconciliação, métricas, health, retenção do outbox, escala) estão listadas em cada fase.

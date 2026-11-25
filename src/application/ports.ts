@@ -105,8 +105,11 @@ export interface OutboxRepository {
   claimDue(now: Date, limit: number, leaseUntil: Date): Promise<OutboxMessage[]>;
   /** Grava `published_at`. Não altera um evento que já foi publicado (outro publisher pode ter chegado antes). */
   markPublished(message: OutboxMessage): Promise<void>;
-  /** Grava `attempts` e `next_attempt_at` depois de uma falha. Não altera um evento que já foi publicado. */
-  scheduleRetry(message: OutboxMessage): Promise<void>;
+  /**
+   * Grava `attempts` e `next_attempt_at` depois de uma falha, só se o evento ainda estiver como o claim deste publisher o deixou
+   * (`next_attempt_at = claimedUntil`) e não publicado. Um publisher atrasado não sobrescreve o lease nem o retry de quem reivindicou depois.
+   */
+  scheduleRetry(message: OutboxMessage, claimedUntil: Date): Promise<void>;
   /** Idade, em milissegundos, do evento não publicado mais antigo (por `occurred_at`, no relógio do banco); 0 se não há pendente. É o lag do outbox. */
   oldestPendingAgeMs(): Promise<number>;
 }

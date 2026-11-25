@@ -147,8 +147,9 @@ describe('OutboxRepository', () => {
     other.markPublished(new Date());
     await uow.run(({ outbox }) => outbox.markPublished(other));
 
+    const slowLease = slow.nextAttemptAt;
     slow.scheduleRetry(now, () => 0); // o 1º chega atrasado e falha
-    await uow.run(({ outbox }) => outbox.scheduleRetry(slow));
+    await uow.run(({ outbox }) => outbox.scheduleRetry(slow, slowLease));
     const { rows } = await probe.query('select attempts, published_at from outbox_messages where id = $1', [m.id]);
     expect(rows[0].attempts).toBe(0); // o retry atrasado não vale: já foi publicado
     expect(rows[0].published_at).not.toBeNull();
@@ -160,8 +161,9 @@ describe('OutboxRepository', () => {
     const now = new Date();
     const [claimed] = await claim(now, 10);
     if (!claimed) throw new Error('claim vazio');
+    const lease = claimed.nextAttemptAt;
     claimed.scheduleRetry(now, () => 0);
-    await uow.run(({ outbox }) => outbox.scheduleRetry(claimed));
+    await uow.run(({ outbox }) => outbox.scheduleRetry(claimed, lease));
     const { rows } = await probe.query('select attempts, next_attempt_at from outbox_messages where id = $1', [m.id]);
     expect(rows[0].attempts).toBe(1);
     expect(rows[0].next_attempt_at.getTime()).toBe(now.getTime() + 1000);

@@ -42,6 +42,7 @@ export interface PublishOutboxOptions {
  * Publisher do outbox (SPEC §8.2, D7). `runOnce()` é uma passada: reivindica os eventos vencidos por lease (transação curta, sem I/O de rede
  * dentro dela), publica cada um FORA de qualquer transação e só então grava `published_at` (outra transação curta).
  *  - Falha ao publicar: `attempts + 1` e `next_attempt_at` com backoff exponencial e jitter. O evento nunca é descartado.
+ *    Se o lease venceu e outro publisher já reivindicou o evento, a falha atrasada não grava nada.
  *  - Crash depois do claim: o lease vence e o evento volta a ser reivindicado.
  *  - Crash (ou falha) entre publicar e marcar: o evento é publicado de novo depois do lease. É a entrega at-least-once: o `eventId` é estável,
  *    então o consumidor deduplica. Não existe publicação exatamente uma vez entre duas máquinas.
@@ -79,7 +80,7 @@ export class PublishOutboxUseCase {
         break;
       }
       try {
-        summary[(await this.publishOne(message)) ? 'published' : 'failed'] += 1;
+        summary[(await this.publishOne(message, leaseUntil)) ? 'published' : 'failed'] += 1;
       } catch (error) {
         summary.failed += 1;
         this.onError(error, contextOf(message)); // falhou ao registrar o resultado no banco; o lease devolve o evento
@@ -88,14 +89,14 @@ export class PublishOutboxUseCase {
     return summary;
   }
 
-  /** `false` se a publicação falhou (e o retry foi agendado). Lança se o banco falhou ao registrar o resultado. */
-  private async publishOne(message: OutboxMessage): Promise<boolean> {
+  /** `false` se a publicação falhou (o retry só é gravado se o claim ainda for deste publisher). Lança se o banco falhou ao registrar o resultado. */
+  private async publishOne(message: OutboxMessage, claimedUntil: Date): Promise<boolean> {
     try {
       await this.publisher.publish(message);
     } catch (error) {
       this.onError(error, contextOf(message));
       message.scheduleRetry(this.clock(), this.random);
-      await this.uow.run(({ outbox }) => outbox.scheduleRetry(message));
+      await this.uow.run(({ outbox }) => outbox.scheduleRetry(message, claimedUntil));
       return false;
     }
     message.markPublished(this.clock());
