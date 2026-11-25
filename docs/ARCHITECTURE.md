@@ -118,6 +118,16 @@ Alternativas e testes: [Fase 1](#fase-1--domínio-e-wallet).
 - Publisher e worker reivindicam por **lease** (`SKIP LOCKED`) numa transação curta e processam fora dela; o worker então trava a wallet primeiro.
 - O banco é a última defesa: `CHECK`, `UNIQUE`, índice parcial e triggers valem mesmo que a aplicação erre.
 
+**Campo `version` da wallet.** Começa em 1 e sobe exatamente 1 a cada mudança de saldo, nunca sem ela: regra do domínio, repetida pelo trigger `wallets_guard`.
+**Não é o controle de concorrência:** `saveBalance` atualiza por `id`, sem `WHERE version = ?`, e quem exclui é o lock. Ele aparece nas respostas de wallet e, como `walletVersion` em `WalletBalanceChanged`, permite ao consumidor ordenar as mudanças de saldo e detectar lacunas.
+
+| Alternativa descartada | Motivo |
+| --- | --- |
+| Otimista (`version` + retry) | Muitas requisições na mesma wallet viram tempestade de retries; as reversões têm vários passos e pedem estado estável |
+| `UPDATE` atômico condicionado ao saldo | Resolve só o caso de um passo; reversões precisariam de outro mecanismo |
+| `FOR UPDATE` pelo `LockMode` do ORM | Também serializa, mas conflita com o `FOR KEY SHARE` das checagens de FK; a vantagem de `FOR NO KEY UPDATE` neste fluxo não foi medida |
+| Lock global | Proibido pelo enunciado; a unidade de concorrência é a wallet |
+
 Detalhes: [Fase 2](#fase-2--betwinloss-por-http-idempotência-e-lock), [Fase 3](#fase-3--refund-rollback-pending_reference-e-worker) e [Fase 5](#fase-5--outbox-transacional-publishers-e-eventos-de-integração).
 
 ## Autenticação
