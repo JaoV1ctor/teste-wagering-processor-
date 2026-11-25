@@ -94,7 +94,7 @@ export class ProcessWagerTransactionUseCase {
     });
   }
 
-  /** `duplicate` se o consumidor já processou esta mensagem; lança se o mesmo `messageId` chegou com outro conteúdo. */
+  /** `duplicate` se o consumidor já processou esta mensagem (mudar só metadados também é duplicata); lança se o mesmo `messageId` chegou com outro hash dos campos de negócio. */
   private async receive({ inbox }: Repositories, origin: MessageOrigin, payloadHash: string): Promise<InboxMessage | 'duplicate'> {
     const message = InboxMessage.receive({ ...origin, payloadHash, now: this.clock() });
     if (await inbox.addIfAbsent(message)) return message;

@@ -91,7 +91,7 @@ describe('inbox na transação do processamento', () => {
     const messageId = `msg-${uuid()}`;
     await useCase.execute(command, { consumerName, messageId });
 
-    // Mesmo conteúdo e mesma chave: quem segura é a idempotência (replay), não o inbox do outro consumidor.
+    // Mesmo hash dos campos de negócio e mesma chave: quem segura é a idempotência (replay), não o inbox do outro consumidor.
     const other = await useCase.execute(command, { consumerName: `${consumerName}-b`, messageId });
 
     expect('duplicateMessage' in other).toBe(false);

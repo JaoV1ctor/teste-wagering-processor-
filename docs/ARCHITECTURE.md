@@ -304,7 +304,7 @@ Pontos que o enunciado deixa em aberto ou ambíguos, e a leitura adotada.
 | 11 | Crédito acima do máximo | Código próprio, `BALANCE_LIMIT_EXCEEDED`, em vez de erro `500` | Fase 3 |
 | 12 | Conflito e wallet inexistente pela fila | Tratados como permanentes (DLQ), não como erro de negócio com ack, porque nada fica gravado | Fase 4 |
 | 13 | `FAILED` pela fila | Não é gravado; a trilha é a DLQ com `FailureReason` | Fase 4 |
-| 14 | `messageId` repetido com outro conteúdo | Erro permanente | Fase 4 |
+| 14 | `messageId` repetido | Com outro hash dos campos de negócio: erro permanente (DLQ). Mudar só metadados (`idempotencyKey`, `occurredAt`) mantém o hash e é tratado como duplicata (ack, nada reprocessado) | Fase 4 |
 | 15 | Eventos | `LOSS` gera `Processed` sem `BalanceChanged`; `PendingReference` só na 1ª vez; replay não gera evento; `OPENING` gera os mesmos de qualquer transação aplicada | Fases 5 e 6 |
 | 16 | Destino dos eventos | Fila SQS padrão `wager-events` | Fase 5 |
 | 17 | `correlationId` ausente | É o id da transação | Fase 5 |
@@ -802,7 +802,7 @@ então não altera a ordem `wallet → transação → ledger`, e duas entregas 
 | --- | --- | --- |
 | **Negócio** | `PROCESSED`, `REJECTED` (ex.: `INSUFFICIENT_BALANCE`), `PENDING_REFERENCE`, replay por idempotência, duplicata do inbox | O commit já gravou o resultado: **ack**. Não vai à DLQ. |
 | **Transitório** | `TransientInfrastructureError`: Postgres fora, `40P01`, `40001`, `55P03`, retry interno esgotado | **Sem ack.** `ChangeMessageVisibility` com `min(teto, base · 2^(n-1))` e jitter "equal" (entre metade e o valor inteiro), `n = ApproximateReceiveCount`. No 5º recebimento sem sucesso o **SQS** move a mensagem para a DLQ (`maxReceiveCount = 5`, redrive da fila). |
-| **Permanente** | Corpo que não é JSON, envelope/`data` inválido, `type` desconhecido, `messageId` reutilizado com outro conteúdo, conflito de idempotência, wallet inexistente, erro inesperado (bug) | Envia **explicitamente** à DLQ (mesmo `MessageGroupId`, `MessageDeduplicationId` = MessageId do SQS, atributo `FailureReason`) e **depois** dá ack. |
+| **Permanente** | Corpo que não é JSON, envelope/`data` inválido, `type` desconhecido, `messageId` reutilizado com outro hash dos campos de negócio, conflito de idempotência, wallet inexistente, erro inesperado (bug) | Envia **explicitamente** à DLQ (mesmo `MessageGroupId`, `MessageDeduplicationId` = MessageId do SQS, atributo `FailureReason`) e **depois** dá ack. |
 
 Códigos de `FailureReason`: `MALFORMED_MESSAGE`, `UNKNOWN_MESSAGE_TYPE`, `INBOX_PAYLOAD_CONFLICT`, `IDEMPOTENCY_CONFLICT`, `WALLET_NOT_FOUND`, `UNEXPECTED_ERROR`.
 
@@ -815,7 +815,7 @@ Códigos de `FailureReason`: `MALFORMED_MESSAGE`, `UNKNOWN_MESSAGE_TYPE`, `INBOX
 - **Decisão: `FAILED / INTERNAL_PERMANENT_ERROR` não é gravado no caminho SQS.** Exigiria uma wallet existente (FK) e uma segunda transação SQL dentro do tratamento de erro (que pode falhar pelo mesmo motivo que
   originou o erro). Pior, `FAILED` é terminal (trigger `wager_transactions_guard`) e ocuparia a `idempotencyKey` para sempre: corrigido o bug, o reenvio do provedor devolveria `FAILED` em vez de
   processar. Payload malformado nem tem wallet nem chave confiáveis para gravar. A trilha de auditoria desses casos é a DLQ com `FailureReason`, que permite reprocessar depois da correção.
-- **Mesmo `messageId` com `payload_hash` diferente é permanente.** Uma reentrega do SQS nunca muda o corpo; se mudou, o produtor reutilizou o id e não há como saber qual conteúdo vale.
+- **Mesmo `messageId` com `payload_hash` diferente é permanente.** Uma reentrega do SQS nunca muda o corpo; se o hash dos campos de negócio mudou, o produtor reutilizou o id e não há como saber qual operação vale.
   Processar de novo seria arriscado e descartar em silêncio esconderia o erro. O `payload_hash` do inbox é o mesmo hash de negócio do `WagerTransaction` (sem a chave de idempotência, que é metadado).
 - **Erro inesperado é permanente na primeira ocorrência.** Retentar um bug só repete o bug; a DLQ preserva a mensagem para reprocesso manual depois da correção.
   Custo assumido: uma falha transitória que o código não reconhece como tal vai à DLQ em vez de ser retentada. `isTransient` (`transient-retry.ts`) reconhece:
@@ -824,16 +824,18 @@ Códigos de `FailureReason`: `MALFORMED_MESSAGE`, `UNKNOWN_MESSAGE_TYPE`, `INBOX
 
 ##### Inbox e idempotência são camadas diferentes
 
-A idempotência decide **o que acontece com o dinheiro** (uma transação por chave); o inbox decide **o que significa uma `messageId`** (um único conteúdo por consumidor).
+A idempotência decide **o que acontece com o dinheiro** (uma transação por chave); o inbox decide **o que significa uma `messageId`** (um único hash dos campos de negócio por consumidor).
 Toda mensagem confirmada por resultado do caso de uso (`PROCESSED`, `REJECTED`, `PENDING_REFERENCE`, replay ou duplicata) tem a sua linha `(consumerName, messageId, payload_hash)` no inbox,
 **inclusive quando a chave já era conhecida** (por exemplo, a mesma aposta aceita antes pelo HTTP). Consequências:
 
 | Entrega | Resultado |
 | --- | --- |
-| Mesma `messageId`, mesmo conteúdo (redelivery depois do commit) | duplicata do inbox: ack |
-| `messageId` nova, chave conhecida, mesmo conteúdo | replay: ack, e a nova `messageId` passa a constar no inbox |
-| `messageId` já registrada, outro conteúdo (chave nova **ou** conhecida) | `INBOX_PAYLOAD_CONFLICT`: DLQ, nada é debitado |
-| `messageId` nova, chave conhecida, outro conteúdo | `IDEMPOTENCY_CONFLICT`: DLQ, nada gravado (nem a linha do inbox) |
+| Mesma `messageId`, mesmo hash dos campos de negócio (redelivery depois do commit) | duplicata do inbox: ack |
+| `messageId` nova, chave conhecida, mesmo hash dos campos de negócio | replay: ack, e a nova `messageId` passa a constar no inbox |
+| `messageId` já registrada, outro hash dos campos de negócio (chave nova **ou** conhecida) | `INBOX_PAYLOAD_CONFLICT`: DLQ, nada é debitado |
+| `messageId` nova, chave conhecida, outro hash dos campos de negócio | `IDEMPOTENCY_CONFLICT`: DLQ, nada gravado (nem a linha do inbox) |
+
+**Só os campos de negócio contam** (os do `payloadHash`, ver "Idempotência e payloadHash"). A mesma `messageId` em que mudaram apenas metadados, como `idempotencyKey` ou `occurredAt`, é **duplicata**: ack, nada é reprocessado e a chave nova não é registrada.
 
 **Correção após revisão independente.** O fast-path devolvia o replay **antes** de registrar a mensagem. Um `messageId` visto só em replay ficava fora do inbox e podia voltar com outra chave e outra transação,
 que era processada (reproduzido em teste: um segundo débito sob a mesma `messageId`). Agora o replay por mensagem abre uma transação curta só com `INSERT` e `UPDATE` do inbox: **sem lock de wallet**
@@ -884,7 +886,7 @@ Além disso, o cenário "morre antes do commit" usa um **processo filho real** m
 | Camada | Arquivos | O que prova |
 | --- | --- | --- |
 | Unidade | `inbox-message`, `wager-message` (zod), `visibility-backoff`, `wager-message-handler`, `consumer-config`, `app-shutdown` | Domínio do inbox; cada caso de payload malformado; backoff e teto; classificação ack/retry/DLQ; validação da config; ordem do encerramento |
-| Integração (Postgres + MiniStack reais) | `process-wager-inbox`, `sqs-replay-inbox`, `sqs-group-order` (precedência no grupo: adiamento com 0 e 2 s, três mensagens, outro grupo em paralelo, falha de ack, de visibilidade, de DLQ e handler que lança, DLQ bem-sucedida que não segura o grupo, esgotamento dos 5 recebimentos), `sqs-consumer`, `sqs-app`, `send-wager-message-cli` | Inbox na mesma transação (atomicidade com falha injetada em 4 pontos, 20 entregas simultâneas); replay por mensagem registra o inbox sem travar a wallet; HTTP, depois replay por SQS, depois a mesma `messageId` com outro conteúdo vai à DLQ sem debitar; ack só após o commit; `REJECTED` com ack; duplicata, redelivery com `messageId` novo, ordem por wallet; Postgres fora (sem ack, backoff 1 s, 2 s) e 5 recebimentos até a DLQ com `MessageGroupId`; payloads inválidos, conflito e wallet inexistente na DLQ com `FailureReason`; paralelismo entre grupos com limite e serialização do grupo; shutdown devolvendo em andamento e não iniciadas; `AppModule` real; CLI produtor |
+| Integração (Postgres + MiniStack reais) | `process-wager-inbox`, `sqs-replay-inbox`, `sqs-group-order` (precedência no grupo: adiamento com 0 e 2 s, três mensagens, outro grupo em paralelo, falha de ack, de visibilidade, de DLQ e handler que lança, DLQ bem-sucedida que não segura o grupo, esgotamento dos 5 recebimentos), `sqs-consumer`, `sqs-app`, `send-wager-message-cli` | Inbox na mesma transação (atomicidade com falha injetada em 4 pontos, 20 entregas simultâneas); replay por mensagem registra o inbox sem travar a wallet; HTTP, depois replay por SQS, depois a mesma `messageId` com outro hash dos campos de negócio vai à DLQ sem debitar; ack só após o commit; `REJECTED` com ack; duplicata, redelivery com `messageId` novo, ordem por wallet; Postgres fora (sem ack, backoff 1 s, 2 s) e 5 recebimentos até a DLQ com `MessageGroupId`; payloads inválidos, conflito e wallet inexistente na DLQ com `FailureReason`; paralelismo entre grupos com limite e serialização do grupo; shutdown devolvendo em andamento e não iniciadas; `AppModule` real; CLI produtor |
 | Concorrência | `test/concurrency/sqs-consumer.test.ts` | **#5** (ack falha depois do commit: a reentrega é duplicata do inbox, 1 débito, 1 inbox, ledger íntegro; também com 4 wallets); **#5b** (processo morto por `SIGKILL` antes do commit: 0 efeitos, reentrega processa 1 vez); 2 consumidores com pools próprios disputando 144 mensagens (48 fatos, duplicatas e reenvios): exatamente 48 processamentos; wallet quente com 2 consumidores: 5 `PROCESSED` e 3 `REJECTED` na ordem de envio |
 
 Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) em todos os testes que movem saldo.

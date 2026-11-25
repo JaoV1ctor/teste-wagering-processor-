@@ -3,7 +3,7 @@ import { InvalidInboxMessageError } from './errors';
 export interface InboxMessageState {
   consumerName: string;
   messageId: string;
-  /** SHA-256 do conteúdo de negócio da mensagem: detecta o mesmo `messageId` reutilizado com outro conteúdo. */
+  /** SHA-256 dos campos de negócio da mensagem: detecta o mesmo `messageId` reutilizado com outro hash. Metadados não entram. */
   payloadHash: string;
   receivedAt: Date;
   processedAt: Date | undefined;

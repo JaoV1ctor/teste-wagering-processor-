@@ -1,4 +1,4 @@
-// Replay por idempotência também registra o inbox: sem isso, um `messageId` visto só em replay poderia voltar com outro conteúdo e passar.
+// Replay por idempotência também registra o inbox: sem isso, um `messageId` visto só em replay poderia voltar com outro hash dos campos de negócio e passar.
 // Aplicação HTTP real, Postgres real e MiniStack real.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
