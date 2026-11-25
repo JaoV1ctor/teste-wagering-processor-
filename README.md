@@ -559,3 +559,7 @@ UniqueConstraintViolationException: 002 down: 1 idempotency_key(s) usada(s) por 
 ```
 
 Em um ambiente descartável, a saída é recriar o banco.
+
+## Como este projeto foi desenvolvido
+
+Este projeto foi desenvolvido pelo autor, que definiu o escopo, tomou as decisões de arquitetura, validou cada etapa e conduziu as revisões. Para isso usou ferramentas de IA: Claude (Anthropic) como apoio ao planejamento, à especificação e à revisão; Claude Code para escrever o código a partir das especificações e critérios de aceite do autor; e Codex (OpenAI) para uma revisão independente, em modo somente leitura. Cada etapa só entrou depois de passar por `bun run check` e pelas suítes de integração e concorrência, e os problemas achados na revisão foram reproduzidos com teste e corrigidos. O autor responde pelas decisões e pelo resultado.
