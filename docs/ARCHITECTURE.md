@@ -71,8 +71,8 @@ Os testes de integração e de concorrência usam Postgres e MiniStack reais. A 
 
 | Comando | Cobre | Resultado |
 | --- | --- | --- |
-| `bun run check` | tipos, lint e testes de unidade | 422 testes em 28 arquivos, 0 falhas |
-| `bun run test:integration` | Postgres e MiniStack reais | 376 testes em 37 arquivos, 0 falhas |
+| `bun run check` | tipos, lint e testes de unidade | 428 testes em 29 arquivos, 0 falhas |
+| `bun run test:integration` | Postgres e MiniStack reais | 388 testes em 38 arquivos, 0 falhas |
 | `bun run test:concurrency` | paralelismo e processos reais | 22 testes em 7 arquivos, 0 falhas |
 
 ## Decisões transversais
@@ -170,14 +170,13 @@ O que **ainda faltaria**: chamar a porta na consulta por `/providers/:providerId
 
 Resumo; o detalhe e a justificativa da maioria estão na seção de cada fase.
 
-- **UUID em maiúsculas (defeito conhecido):** a validação aceita, mas as comparações e o `payloadHash` diferenciam caixa. `playerId` em maiúsculas é rejeitado como `PLAYER_MISMATCH`, e reenviar a mesma chave mudando a caixa de um id dá `409`. Observado na API real; sem correção nem teste. A saída seria normalizar os UUIDs na borda.
 - **Chave de idempotência:** o header HTTP tem os espaços das pontas removidos; `data.idempotencyKey` da fila não.
 - **Contratos:** `POST /wallets` não é idempotente (repetir dá `409`); o `providerId` `internal` não é reservado; não há `statement_timeout`.
 - **Segurança:** sem autenticação; `/metrics` e health abertos; a aplicação conecta como dona das tabelas, e quem tem esse papel pode desligar triggers (não há papel restrito de banco).
 - **Escala:** escritas na mesma wallet são serializadas; throughput sob carga não foi medido (sem teste de carga). Prazos, lotes e backoffs são estimativas. Ver [Fase 2](#fase-2--betwinloss-por-http-idempotência-e-lock).
 - **Reversões e referências:** sem reversão parcial; referência que não chega em cerca de 3 a 4,5 minutos vira `REJECTED`, mas um reprocesso que só falha com erro não tem teto de tentativas. Ver [Limite do PENDING_REFERENCE](#limite-do-pending_reference).
 - **Fila (falhas):** erro inesperado vai à DLQ na primeira ocorrência, e mensagem anterior à criação da wallet também.
-- **Fila (ordem):** a ordem por wallet não sobrevive à DLQ, não cobre HTTP nem pendências, e não há heartbeat de visibilidade. Comportamentos verificados no MiniStack, não na AWS. Ver [Fase 4](#fase-4--consumidor-sqs-inbox-dlq-e-shutdown).
+- **Fila (ordem):** a ordem por wallet não sobrevive à DLQ, não cobre HTTP nem pendências, e não há heartbeat de visibilidade. O `MessageGroupId` é escolhido pelo produtor e não é normalizado: o mesmo `walletId` com caixas diferentes cai em grupos diferentes, sem ordem entre eles (o saldo continua protegido pelo banco). Comportamentos verificados no MiniStack, não na AWS. Ver [Fase 4](#fase-4--consumidor-sqs-inbox-dlq-e-shutdown).
 - **Eventos:** at-least-once e sem ordem de entrega (o consumidor deduplica por `eventId` e ordena o saldo por `walletVersion`); outbox sem DLQ; inbox e outbox sem retenção. Ver [Fase 5](#fase-5--outbox-transacional-publishers-e-eventos-de-integração).
 - **Operação:** reconciliação sob demanda, com custo proporcional ao ledger da wallet; métricas por instância; sem dashboard, alertas nem tracing; saídas do runtime e de bibliotecas podem escapar do log JSON. Ver [Fase 6](#fase-6--reconciliação-health-métricas-e-logs).
 - **Relógio:** leases e backoffs usam o relógio da aplicação; desvio entre instâncias desloca vencimentos.
@@ -252,7 +251,8 @@ Implementação: `src/application/payload-hash.ts`; o caso de uso monta a entrad
 
 | Entra no hash | Observação |
 | --- | --- |
-| `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind` | Como recebidos depois da validação, sem aparar nem mudar maiúsculas |
+| `playerId`, `walletId` | UUIDs já normalizados para minúsculas na borda |
+| `providerId`, `externalTransactionId`, `roundId`, `gameId`, `kind` | Como recebidos depois da validação, sem aparar nem mudar maiúsculas |
 | `money.amount`, `money.currency` | `amount` normalizado para 2 casas por `Money.toProps()`: `"5"` e `"5.00"` dão o mesmo hash |
 | `referenceExternalTransactionId` | Só quando presente; ausente, a chave não aparece no JSON |
 
@@ -265,6 +265,8 @@ Implementação: `src/application/payload-hash.ts`; o caso de uso monta a entrad
 {"externalTransactionId":"ext-1","gameId":"g1","kind":"BET","money":{"amount":"10.00","currency":"BRL"},"playerId":"p1","providerId":"prov","roundId":"r1","walletId":"w1"}
 c35c7153b3f48996a7edd07ab2e00c8b4c871d1b2511ed96f6d5a3194fb0606a
 ```
+
+**UUIDs:** como a normalização vem antes do hash, a mesma operação com outra caixa é replay. Não há migração de hashes: um registro gravado antes da normalização, a partir de UUID em maiúsculas, teria outro hash, e o reenvio daria conflito.
 
 **Uso:** gravado em `wager_transactions.payload_hash` e em `inbox_messages.payload_hash`. Mesma chave e mesmo hash é replay; mesma chave e outro hash é conflito (`409`; na fila, DLQ).
 A transação interna `OPENING` usa o mesmo algoritmo, com `providerId = "internal"` e `roundId = gameId = "opening"`.
@@ -307,6 +309,7 @@ Pontos que o enunciado deixa em aberto ou ambíguos, e a leitura adotada.
 | 16 | Destino dos eventos | Fila SQS padrão `wager-events` | Fase 5 |
 | 17 | `correlationId` ausente | É o id da transação | Fase 5 |
 | 18 | Divergência na reconciliação | Resposta `200` com `consistent: false`, log e métrica; nunca corrige | Fase 6 |
+| 19 | Caixa dos UUIDs | Normalizados para minúsculas uma vez, na borda (`uuidSchema`, `src/interface/http/wallets.dto.ts`): `playerId` e `walletId` no HTTP e na mensagem SQS, e `:walletId` e `:transactionId` nas rotas. O `payloadHash` usa o valor já normalizado. Ids que não são UUID (`idempotencyKey`, `externalTransactionId`, `referenceExternalTransactionId` e os demais) ficam como chegaram; provas em `test/unit/uuid-case.test.ts` e `test/integration/uuid-case.test.ts` | Idempotência e payloadHash |
 
 ### Registro de decisões por fase
 
@@ -459,7 +462,7 @@ a paginação não repete nem omite itens mesmo com escritas entre as chamadas (
 
 **7. Validação na borda com zod 4.** Objetos `strict` (campo desconhecido é erro). O zod só valida a forma; as regras de dinheiro
 são de `Money`, chamado dentro do schema, para existir uma única fonte da verdade. `amount` como `number` JSON é rejeitado.
-Ids são `z.uuid()`: id malformado devolve `400` e nunca chega ao Postgres (que responderia `22P02` e viraria 500).
+Ids são `z.uuid()`, normalizados para minúsculas (interpretação 19): id malformado devolve `400` e nunca chega ao Postgres (que responderia `22P02` e viraria 500).
 Alternativa descartada: `class-validator` (decorators e segunda definição das regras de dinheiro).
 
 **8. Mapeamento HTTP.** Um único `toHttpError` puro, aplicado por um filtro global; o provedor decide reenviar (`503`), corrigir (`400`/`409`) ou desistir (`422`) pelo status e pelo `code`, sem interpretar mensagem.
@@ -724,7 +727,7 @@ se estourou, há transação travada, não fila. Com 3 tentativas o pior caso é
 É uma estimativa, não uma medição; ajustável por `LOCK_TIMEOUT_MS`. Uma wallet muito quente com fila maior que 3 s de trabalho veria `503`s, comportamento desejado (contrapressão), mas o dimensionamento fica para o teste de carga.
 Teste: outra conexão segura o lock da wallet; a submissão falha com `TransientInfrastructureError` (causa `55P03`) em ≥ `lock_timeout` e < 5 s, nada persiste, e o reenvio depois de liberado dá `201`; pela API, `503` com `Retry-After`.
 
-**`walletId` validado antes de chegar ao lock.** O corpo usa `z.uuid()` para `walletId` e `playerId` e o controller só chama o caso de uso com o corpo já validado. `walletId` malformado
+**`walletId` validado antes de chegar ao lock.** O corpo usa `uuidSchema` (`z.uuid()` em minúsculas) para `walletId` e `playerId` e o controller só chama o caso de uso com o corpo já validado. `walletId` malformado
 (`nao-e-uuid`, truncado, com SQL anexado) é `400 VALIDATION_ERROR` e nada é gravado: o Postgres nunca vê o valor (sem `22P02` virando `500`). Teste: `wagering-http.test.ts`.
 A mensagem do SQS é validada com os mesmos campos e regras (Fase 4).
 
