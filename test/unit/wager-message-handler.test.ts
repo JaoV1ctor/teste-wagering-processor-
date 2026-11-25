@@ -98,7 +98,7 @@ describe('WagerMessageHandler: classificação de erros', () => {
 
   test.each([
     ['conflito de idempotência (nada foi gravado)', () => new IdempotencyConflictError(), 'IDEMPOTENCY_CONFLICT'],
-    ['messageId reutilizado com outro conteúdo', () => new InboxPayloadConflictError('msg-1'), 'INBOX_PAYLOAD_CONFLICT'],
+    ['messageId reutilizado com outro hash dos campos de negócio', () => new InboxPayloadConflictError('msg-1'), 'INBOX_PAYLOAD_CONFLICT'],
     ['wallet inexistente (nada foi gravado)', () => new WalletNotFoundError('w'), 'WALLET_NOT_FOUND'],
     ['bug (erro inesperado)', () => new Error('bug'), 'UNEXPECTED_ERROR'],
   ])('PERMANENTE (%s) => DLQ', async (_name, makeError, reason) => {

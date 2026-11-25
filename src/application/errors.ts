@@ -46,6 +46,6 @@ export class TransientInfrastructureError extends ApplicationError {
 /** Mesmo `messageId` já visto neste consumidor, porém com outro hash dos campos de negócio. Reentrega não muda o corpo: é bug do produtor; nunca resolve sozinho. */
 export class InboxPayloadConflictError extends ApplicationError {
   constructor(readonly messageId: string) {
-    super(`messageId ${messageId} já foi recebido com outro conteúdo`);
+    super(`messageId ${messageId} já foi recebido com outro hash dos campos de negócio`);
   }
 }

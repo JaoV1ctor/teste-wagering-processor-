@@ -138,7 +138,7 @@ describe('duplicação e redelivery', () => {
     });
   });
 
-  test('mesma messageId com OUTRA idempotencyKey e o mesmo conteúdo: o inbox barra (duplicateMessage) e nada é debitado de novo', async () => {
+  test('mesma messageId com OUTRA idempotencyKey e o mesmo hash dos campos de negócio: o inbox barra (duplicateMessage) e nada é debitado de novo', async () => {
     const queues = await newQueues(client);
     const wallet = await newWallet();
     await withConsumer({ queues }, async ({ processor }) => {
@@ -240,7 +240,7 @@ describe('erros permanentes: DLQ explícita e só então ack', () => {
     });
   });
 
-  test('messageId reutilizada com outro conteúdo => permanente (INBOX_PAYLOAD_CONFLICT) e nada novo é gravado', async () => {
+  test('messageId reutilizada com outro hash dos campos de negócio => permanente (INBOX_PAYLOAD_CONFLICT) e nada novo é gravado', async () => {
     const queues = await newQueues(client);
     const wallet = await newWallet();
     await withConsumer({ queues }, async ({ processor }) => {

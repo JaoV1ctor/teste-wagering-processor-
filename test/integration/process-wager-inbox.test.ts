@@ -61,7 +61,7 @@ describe('inbox na transação do processamento', () => {
     expect(await ledgerBalance(probe, wallet.id)).toEqual({ stored: '70.00', rebuilt: '70.00', entries: 2 });
   });
 
-  test('mesma messageId e mesmo conteúdo, outra idempotencyKey: duplicata pelo inbox, nada é reprocessado', async () => {
+  test('mesma messageId e mesmo hash dos campos de negócio, outra idempotencyKey: duplicata pelo inbox, nada é reprocessado', async () => {
     const { wallet, command } = await wagerFor();
     const messageId = `msg-${uuid()}`;
     await useCase.execute(command, { consumerName, messageId });
@@ -74,7 +74,7 @@ describe('inbox na transação do processamento', () => {
     expect((await probe.query('select 1 from wager_transactions where wallet_id = $1 and kind = $2', [wallet.id, 'BET'])).rows).toHaveLength(1);
   });
 
-  test('mesma messageId com conteúdo diferente: InboxPayloadConflictError e nada novo persiste', async () => {
+  test('mesma messageId com outro hash dos campos de negócio: InboxPayloadConflictError e nada novo persiste', async () => {
     const { wallet, command } = await wagerFor();
     const messageId = `msg-${uuid()}`;
     await useCase.execute(command, { consumerName, messageId });
@@ -137,7 +137,7 @@ describe('inbox na transação do processamento', () => {
 });
 
 describe('replay de uma chave já conhecida, entrando por mensagem', () => {
-  test('registra a messageId no inbox, já processada, com o hash do conteúdo', async () => {
+  test('registra a messageId no inbox, já processada, com o hash dos campos de negócio', async () => {
     const { wallet, command } = await wagerFor();
     await useCase.execute(command); // HTTP: sem inbox
     const messageId = `msg-${uuid()}`;
