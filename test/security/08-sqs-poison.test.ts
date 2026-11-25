@@ -133,7 +133,7 @@ securityCase('Mensagem acima do limite do SQS (2 MB)', 'recusada pelo broker, ou
   return `${broker}; a válida seguinte foi processada`;
 });
 
-securityCase('messageId repetido com conteúdo diferente', 'DLQ INBOX_PAYLOAD_CONFLICT; só o primeiro conteúdo é aplicado', async () => {
+securityCase('messageId repetido com outro hash dos campos de negócio', 'DLQ INBOX_PAYLOAD_CONFLICT; só a primeira mensagem é aplicada', async () => {
   const first = message();
   const before = await ledgerBalance(env.probe, wallet.walletId);
   await send(JSON.stringify(first));

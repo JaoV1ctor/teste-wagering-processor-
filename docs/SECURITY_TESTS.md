@@ -46,7 +46,7 @@ O achado 7 foi corrigido depois, também com os testes primeiro: com a chave glo
 
 Copiado do relatório gerado pela execução. A única edição está nos casos de segredos: as contagens que mudam a cada commit (linhas e commits varridos, strings de conexão encontradas) ficam só no relatório.
 
-Execução de 2026-11-25T18:40:05.741Z, Bun 1.4.4: 92 casos em 10 categorias; 78 passaram, 14 confirmam limitações e 0 falharam.
+Execução de 2026-11-25T19:19:34.259Z, Bun 1.4.4: 92 casos em 10 categorias; 78 passaram, 14 confirmam limitações e 0 falharam.
 
 ### 1. Injeção e entradas malformadas
 
@@ -162,7 +162,7 @@ Execução de 2026-11-25T18:40:05.741Z, Bun 1.4.4: 92 casos em 10 categorias; 78
 | Wallet inexistente | DLQ WALLET_NOT_FOUND, nada gravado | 1 veneno(s) na DLQ (WALLET_NOT_FOUND×1), sem escrita; a mensagem válida seguinte foi sempre processada | passou |
 | Mensagem enorme dentro do limite do broker (200 KB) | DLQ MALFORMED_MESSAGE | 1 veneno(s) na DLQ (MALFORMED_MESSAGE×1), sem escrita; a mensagem válida seguinte foi sempre processada | passou |
 | Mensagem acima do limite do SQS (2 MB) | recusada pelo broker, ou entregue e enviada à DLQ; consumidor segue | recusada pelo broker no envio; a válida seguinte foi processada | passou |
-| messageId repetido com conteúdo diferente | DLQ INBOX_PAYLOAD_CONFLICT; só o primeiro conteúdo é aplicado | 1 veneno(s) na DLQ (INBOX_PAYLOAD_CONFLICT×1), sem escrita; a mensagem válida seguinte foi sempre processada | passou |
+| messageId repetido com outro hash dos campos de negócio | DLQ INBOX_PAYLOAD_CONFLICT; só a primeira mensagem é aplicada | 1 veneno(s) na DLQ (INBOX_PAYLOAD_CONFLICT×1), sem escrita; a mensagem válida seguinte foi sempre processada | passou |
 | Outro provedor reutiliza pela fila a chave de um primeiro | as duas aplicadas, cada uma no próprio provedor; nada na DLQ | 2 lançamentos, DLQ vazia | passou |
 | Outro provedor ocupa antes o messageId de um primeiro | comportamento atual: a messageId vale para o consumidor inteiro; a mensagem legítima vai à DLQ | a legítima não foi aplicada: 1 veneno(s) na DLQ (INBOX_PAYLOAD_CONFLICT×1), sem escrita; a mensagem válida seguinte foi sempre processada | limitação confirmada |
 | Logs do consumidor durante os venenos | uma linha JSON por evento, sem o corpo da mensagem | 4 linhas de log, sem a marca nem o valor | passou |

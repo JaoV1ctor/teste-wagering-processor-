@@ -25,7 +25,7 @@ describe('InboxMessage', () => {
     expect(() => message.markProcessed(later)).toThrow();
   });
 
-  test('matchesPayload compara o hash do conteúdo', () => {
+  test('matchesPayload compara o hash dos campos de negócio', () => {
     const message = receive();
     expect(message.matchesPayload(hash)).toBe(true);
     expect(message.matchesPayload('b'.repeat(64))).toBe(false);

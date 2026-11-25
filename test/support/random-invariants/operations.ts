@@ -188,7 +188,7 @@ export function generateOps(seed: number, count: number, profile: Profile): Op[]
       const queued = submitted.filter((op) => op.via === 'sqs');
       if (queued.length === 0) continue;
       const original = pick(queued);
-      // Reentrega da mesma messageId: igual (duplicata) ou com outro conteúdo (conflito no inbox).
+      // Reentrega da mesma messageId: igual (duplicata) ou com outro hash dos campos de negócio (conflito no inbox).
       ops.push(chance(0.6) ? { ...original } : { ...original, request: divergent(original.request) });
     } else if (roll < 0.93) send(freshRequest(chance(0.5) ? 'BET' : 'WIN'), { defect: pick(DEFECTS) });
     else if (roll < 0.95) send({ ...freshRequest('BET'), wallet: UNKNOWN_WALLET });
