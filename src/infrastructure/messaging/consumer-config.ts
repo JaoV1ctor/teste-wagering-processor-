@@ -5,7 +5,7 @@ import type { SqsQueueNames } from './sqs-message-queue';
  * Padrões do consumidor, todos sobrescrevíveis por variável de ambiente (nomes em `.env.example`). Cada número tem uma razão:
  *  - concurrency 5: cada mensagem em processamento ocupa uma conexão do pool (padrão do `pg`: 10), que o HTTP e o worker também usam.
  *  - batchSize 10 e waitTimeSeconds 20: o máximo do ReceiveMessage e o long polling máximo (menos chamadas vazias).
- *  - visibilityTimeoutSeconds 30: bem acima do pior caso de um processamento (3 tentativas de lock_timeout de 3 s ≈ 9 s), igual ao da fila.
+ *  - visibilityTimeoutSeconds 30: bem acima de um processamento normal e das 3 tentativas contra uma wallet travada (≈ 9 s), igual ao da fila.
  *  - retryBaseSeconds 5 e retryMaxSeconds 120: com maxReceiveCount = 5, as 4 esperas somam ~1 min (5+10+20+40 sem jitter) antes da DLQ:
  *    cobre um failover ou reinício de Postgres sem esgotar as tentativas em segundos. Estimativa, não medição.
  *  - shutdownTimeoutMs 25000: abaixo dos 30 s de graça típicos do orquestrador entre SIGTERM e SIGKILL.

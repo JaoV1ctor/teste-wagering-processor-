@@ -22,9 +22,9 @@ const repositoriesFor = (em: EntityManager, observer: PersistenceObserver | unde
 });
 
 /**
- * Quanto uma transação espera por qualquer lock. O lock da wallet dura uma transação curta (dezenas de ms): 3s é ~100x essa margem,
- * então estourar significa transação travada, não fila normal. Com 3 tentativas o pior caso fica em ~9s, abaixo de um timeout típico
- * de gateway (10s): o provedor recebe 503 + Retry-After em vez de uma conexão pendurada. Estimativa, ajustável por `LOCK_TIMEOUT_MS`.
+ * Prazo de CADA espera por lock (o Postgres o aplica por tentativa de obter um lock; não limita a espera total numa fila). O lock da wallet
+ * dura uma transação curta (dezenas de ms), então uma espera de 3s indica transação travada; contra ela, as 3 tentativas somam ~9s e o
+ * provedor recebe 503 + Retry-After. Estimativa, ajustável por `LOCK_TIMEOUT_MS`.
  */
 export const DEFAULT_LOCK_TIMEOUT_MS = 3000;
 
