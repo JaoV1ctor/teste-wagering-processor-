@@ -13,6 +13,7 @@ Decisões, alternativas, trade-offs e limitações do serviço. A primeira parte
 - [Autenticação](#autenticação)
 - [Limitações conhecidas](#limitações-conhecidas): [trade-offs](#trade-offs-assumidos)
 - [Detalhes](#detalhes)
+  - [Cobertura dos testes obrigatórios](#cobertura-dos-testes-obrigatórios)
   - [Regras e contratos](#regras-e-contratos): [estados](#máquina-de-estados-de-wagertransaction), [códigos de falha](#códigos-de-falha), [payloadHash](#idempotência-e-payloadhash), [limite do PENDING_REFERENCE](#limite-do-pending_reference), [interpretações](#interpretações-do-enunciado)
   - [Registro de decisões por fase](#registro-de-decisões-por-fase):
     [0, base técnica](#fase-0--base-técnica-e-spike-de-compatibilidade) ·
@@ -71,9 +72,9 @@ Os testes de integração e de concorrência usam Postgres e MiniStack reais. A 
 
 | Comando | Cobre | Resultado |
 | --- | --- | --- |
-| `bun run check` | tipos, lint e testes de unidade | 430 testes em 30 arquivos, 0 falhas |
-| `bun run test:integration` | Postgres e MiniStack reais | 388 testes em 38 arquivos, 0 falhas |
-| `bun run test:concurrency` | paralelismo e processos reais | 22 testes em 7 arquivos, 0 falhas |
+| `bun run check` | tipos, lint e testes de unidade | 442 testes em 31 arquivos, 0 falhas |
+| `bun run test:integration` | Postgres e MiniStack reais | 430 testes em 40 arquivos, 0 falhas |
+| `bun run test:concurrency` | paralelismo e processos reais | 23 testes em 7 arquivos, 0 falhas |
 
 ## Decisões transversais
 
@@ -196,6 +197,62 @@ Resumo; o detalhe e a justificativa da maioria estão na seção de cada fase.
 ---
 
 ## Detalhes
+
+### Cobertura dos testes obrigatórios
+
+Cada item da lista de testes obrigatórios do enunciado e onde ele é provado. Nomes com `%s` ou `%p` são casos parametrizados; alguns nomes são o título do grupo.
+
+#### Unidade
+
+| Item do enunciado | Arquivo e teste |
+| --- | --- |
+| `Money`: escala | `test/unit/money.test.ts`: "toString sempre com 2 casas" |
+| `Money`: arredondamento (não há: mais de 2 casas é recusado) | `test/unit/money.test.ts`: "rejeita mais de 2 casas decimais: %s" |
+| `Money`: entradas inválidas | `test/unit/money.test.ts`: "rejeita entrada inválida: %p"; "rejeita entrada que não é string (number vindo de JSON)"; "rejeita moeda inválida: %p" |
+| Invariantes da `Wallet` | `test/unit/wallet.test.ts`: "saldo nunca fica negativo: débito acima do saldo lança e não altera o estado"; "débito reduz o saldo, sobe version e devolve o lançamento correspondente"; "cadeia: o balanceBefore de cada lançamento é o balanceAfter do anterior" |
+| Regras de `BET`, `WIN`, `LOSS` | `test/unit/wager-settlement.test.ts`: "debita, gera lançamento DEBIT encadeado e fica PROCESSED com o saldo observado"; "credita, gera lançamento CREDIT e fica PROCESSED"; "não move saldo, não gera lançamento, não sobe version; fica PROCESSED com o saldo atual" |
+| Regras de `REFUND` e `ROLLBACK` | `test/unit/wager-settlement-reversal.test.ts`: "REFUND de BET: crédito do mesmo valor; PROCESSED com a referência e o saldo observado"; "ROLLBACK de %s é o inverso da referência (%s)"; "rejeições: saldo, version e ledger intactos; saldo observado gravado" |
+| Conflito de moeda | `test/unit/money.test.ts`: "moedas diferentes: add, subtract e comparação lançam CurrencyMismatchError"<br>`test/unit/wallet.test.ts`: "moeda diferente é rejeitada"<br>`test/unit/wager-settlement.test.ts`: "moeda diferente: REJECTED/CURRENCY_MISMATCH, wallet e ledger intactos" |
+| Chave de idempotência com payload divergente | `test/unit/idempotency-divergent-payload.test.ts`: "payload divergente (%s): IdempotencyConflictError, nunca replay"; "mesmo payload: replay da transação gravada, sem abrir transação"<br>`test/unit/payload-hash.test.ts`: "muda quando %s muda" |
+
+#### Integração (Postgres e MiniStack reais)
+
+| Item do enunciado | Arquivo e teste |
+| --- | --- |
+| Migrations | `test/integration/migration.test.ts`: "migration up → down → up (reversível)" |
+| Constraints | `test/integration/schema.test.ts`: "Constraints básicas"; "Ledger imutável e encadeado, wallet: version e consistência"; "Idempotência, estados terminais e reversão única"<br>`test/integration/schema-constraints.test.ts`: "recusa %s"; "coluna de identidade %s é imutável, mesmo em transação não terminal"; "inbox: a mesma messageId não entra duas vezes no mesmo consumidor" |
+| Atomicidade entre wallet, ledger, inbox e outbox | `test/integration/sqs-processing-atomicity.test.ts`: "wallet, ledger, inbox e outbox não persistem; a reentrega grava os quatro uma única vez"<br>`test/integration/outbox-atomicity.test.ts`: "falha ao gravar o evento: a pendência não é resolvida, o saldo não muda e não sobra evento órfão"<br>`test/integration/create-wallet-atomicity.test.ts`: "falha ao gravar o evento: wallet, OPENING, lançamento e eventos não permanecem (evento e fato são um só commit)" |
+| Inbox e redelivery | `test/integration/process-wager-inbox.test.ts`: "a mesma mensagem entregue 20 vezes ao mesmo tempo debita uma vez"<br>`test/integration/sqs-consumer.test.ts`: "mesma messageId entregue duas vezes com o mesmo corpo: um débito, a 2ª é duplicata do inbox"; "redelivery com messageId NOVA e a mesma idempotencyKey: replay pela idempotência, um débito" |
+| Publishers concorrentes sobre a mesma outbox | `test/integration/outbox-repository.test.ts`: "claims concorrentes recebem lotes DISJUNTOS (FOR UPDATE SKIP LOCKED): cada evento é reivindicado uma única vez"<br>`test/concurrency/outbox.test.ts`: "nenhum evento perdido e, sem falhas, nenhum duplicado: claims disjuntos que PULAM a linha travada por outra transação" |
+| Retry e DLQ | `test/integration/sqs-consumer.test.ts`: "Postgres fora: não dá ack e ajusta a visibilidade com backoff exponencial pelo ApproximateReceiveCount"; "5 recebimentos sem sucesso: o SQS move a mensagem para a DLQ com o MessageGroupId, sem nenhum ack"<br>`test/integration/outbox-publisher.test.ts`: "falha => attempts+1 e next_attempt_at com backoff exponencial; não republica antes da hora; recupera quando o SQS volta" |
+| Recuperação após reinicialização | `test/concurrency/outbox.test.ts`: "commit, SIGKILL antes de publicar, novo serviço sobe => o evento é publicado e wallet == ledger == eventos"<br>`test/integration/outbox-publisher.test.ts`: "publisher morre depois do claim: ninguém publica antes do lease vencer; depois outra instância publica, uma vez só"<br>`test/integration/pending-reference-worker.test.ts`: "o claim agenda a transação para depois do lease: uma segunda execução não a pega; vencido o lease, ela volta (recuperação de crash)" |
+
+#### Concorrência
+
+| Item do enunciado | Arquivo e teste |
+| --- | --- |
+| 1. Mesma aposta 50 vezes em paralelo, um único débito | `test/concurrency/wager-transactions.test.ts`: "#1 mesma BET x50 em paralelo: 1 débito, 49 replays, mesmo status e corpo em todas" |
+| 2. Operações concorrentes disputando o saldo da mesma wallet | `test/concurrency/wager-transactions.test.ts`: "#2 duas BETs de 80,00 em saldo 100,00: 1 PROCESSED, 1 REJECTED, saldo 20,00, 1 débito (10 rodadas)"; "30 BETs distintas de 10,00 em saldo 100,00: exatamente 10 processadas, 20 rejeitadas, saldo 0,00 (nunca negativo)" |
+| 3. Wallets distintas em paralelo | `test/concurrency/wager-transactions.test.ts`: "50 wallets x (BET + WIN + LOSS simultâneas): todas corretas, nenhuma falha transitória" |
+| 4. Pelo menos 3 processos simultâneos | `test/concurrency/wager-multiprocess.test.ts`: "processos reais: mesmas apostas em todos, saldo disputado em outra wallet; invariantes mantidas" |
+| 5. Worker morto depois do commit e antes do ack | `test/concurrency/sqs-consumer.test.ts`: "o commit sobrevive, a mensagem é reentregue e outra instância a confirma sem repetir débito, ledger, inbox ou evento"; "a mensagem é reentregue e o reprocessamento não duplica débito, ledger nem inbox" |
+| 6. Dois publishers sobre a mesma outbox | `test/concurrency/outbox.test.ts`: "nenhum evento perdido e, sem falhas, nenhum duplicado: claims disjuntos que PULAM a linha travada por outra transação"; "publisher morre (SIGKILL) depois de enviar e antes de marcar: outro publica de novo depois do lease; sem perda, duplicata contada e idêntica por eventId" |
+| 7. `ROLLBACK` ou `REFUND` antes da referência | `test/integration/pending-reference-worker.test.ts`: "REFUND antes da BET: 202; sem a BET o worker só reagenda; com a BET resolve como PROCESSED com crédito e ledger"; "ROLLBACK antes da WIN: o worker resolve com DÉBITO (inverso da referência)"<br>`test/concurrency/reversals.test.ts`: "3 PROCESSOS reais disputando 30 pendências: cada uma resolvida exatamente uma vez, 30 créditos, invariante do ledger" |
+| 8. Reinício do serviço com consistência final | `test/concurrency/outbox.test.ts`: "commit, SIGKILL antes de publicar, novo serviço sobe => o evento é publicado e wallet == ledger == eventos" |
+
+#### Invariante final
+
+`wallet.balance == saldo reconstruído pelo ledger`: conferida wallet a wallet nos testes que movem saldo (`ledgerBalance` em `test/support/db.ts` e `expectEventsConsistentWithLedger` em `test/support/events.ts`).
+Os arquivos de integração que moviam saldo sem essa conferência exigem, ao encerrar, que nenhuma wallet do banco de testes esteja divergente (`divergentWallets`).
+
+#### Como ler estas provas
+
+- **Processos reais:** os itens 4, 5, 6 e 8 e a disputa de pendências do item 7 usam processos separados. Nos itens 5, 6 e 8 o encerramento é por `SIGKILL`. A suíte foi executada em Windows, que o implementa como término forçado do processo; não foi executada em Linux.
+- **Item 4:** o teste segura o lock das wallets até o `pg_stat_activity` mostrar requisições dos 3 processos esperando ao mesmo tempo; só então libera.
+- **Item 6:** os dois publishers largam juntos por uma barreira e uma linha travada obriga a pulá-la; o teste não exige que cada um publique uma parte.
+- **Itens 1 a 3:** requisições HTTP simultâneas contra uma instância; várias instâncias são o item 4.
+- **Falhas injetadas:** os testes de atomicidade trocam um método do repositório real para lançar, dentro da transação real; a morte do processo no meio da transação é provada à parte em `test/concurrency/sqs-consumer.test.ts`.
+- **Unidade com dublê:** o teste da decisão "replay ou conflito" substitui só a porta de leitura; a mesma regra é provada contra o Postgres em `test/integration/process-wager-transaction.test.ts`.
 
 ### Regras e contratos
 
@@ -879,7 +936,7 @@ com `maxReceiveCount = 5` o backoff soma ~1 min (5 + 10 + 20 + 40 s, sem jitter)
 
 O código de produção não tem ponto de falha injetável. O consumidor recebe a fila pela porta `MessageQueue` (adaptador `SqsMessageQueue`); os testes embrulham o **adaptador real** num decorador
 (`InterceptingQueue`) que observa ou intercepta uma chamada, por exemplo fazer o `acknowledge` lançar para simular "o worker morreu depois do commit". Postgres e SQS são sempre reais.
-Além disso, o cenário "morre antes do commit" usa um **processo filho real** morto com `SIGKILL` dentro da transação (esperando um lock segurado pelo teste).
+Além disso, os cenários "morre antes do commit" e "morre depois do commit e antes do ack" usam um **processo filho real** morto com `SIGKILL`: no primeiro, dentro da transação (esperando um lock segurado pelo teste); no segundo, parado no ack.
 
 ##### Verificação
 
