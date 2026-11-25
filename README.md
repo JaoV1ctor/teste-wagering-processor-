@@ -123,7 +123,14 @@ Medido em 2026-11-25, uma execução por comando (os tempos variam entre execuç
 
 ## Como funciona
 
-Três desenhos, do geral para o detalhe.
+Três desenhos, do geral para o detalhe, lidos de cima para baixo e com as mesmas cores:
+
+| Cor | O que é |
+| --- | --- |
+| Azul | Entrada e resposta |
+| Amarelo | Regra de negócio |
+| Verde | Banco, a única fonte de verdade |
+| Cinza | Trabalho em segundo plano e destinos |
 
 ### 1. O sistema inteiro
 
@@ -154,13 +161,6 @@ flowchart TD
     class dlq,publisher,events,worker fundo
 ```
 
-| Cor | O que é |
-| --- | --- |
-| Azul | Entrada |
-| Amarelo | Regra de negócio |
-| Verde | Banco, a única fonte de verdade |
-| Cinza | Trabalho em segundo plano e destinos |
-
 - O consumidor busca mensagens por *long polling* e só confirma (*ack*) **depois do commit**. Falha transitória volta à fila; falha permanente vai para a DLQ.
 - Pode haver várias instâncias da aplicação: quem coordena é o banco, não a memória do processo.
 
@@ -179,43 +179,41 @@ Para operar o serviço:
 Uma `BET` enviada por HTTP. Os quatro desfechos principais: reenvio, conflito, saldo insuficiente e sucesso.
 
 ```mermaid
-sequenceDiagram
-    participant P as Provedor
-    participant S as Serviço
-    participant DB as PostgreSQL
-    participant PUB as Publisher
-    participant Q as Fila wager-events
+flowchart TD
+    provider["Provedor envia a aposta com Idempotency-Key"] --> api["API HTTP valida os dados"]
+    api --> hash["Calcula o payloadHash"]
+    hash --> key{"Essa chave já existe?"}
 
-    P->>S: Envia a aposta com Idempotency-Key
-    S->>S: Valida e calcula o payloadHash
-    S->>DB: Essa chave já existe?
+    key -->|"sim, mesmos dados de negócio"| replay["Devolve o resultado gravado"]
+    key -->|"sim, dados diferentes"| conflict["409 conflito"]
+    key -->|"não"| lock["Trava a wallet"]
 
-    alt Já existe, mesmos dados de negócio
-        S-->>P: Devolve o resultado gravado
-    else Já existe, dados de negócio diferentes
-        S-->>P: 409 conflito
-    else Chave nova
-        S->>DB: Trava a wallet
-        alt Saldo insuficiente
-            S->>DB: Grava a rejeição e o evento, COMMIT
-            S-->>P: 422 REJECTED
-        else Saldo suficiente
-            S->>DB: Grava transação, ledger, saldo e evento, COMMIT
-            S-->>P: 201 PROCESSED
-        end
-    end
+    lock --> balance{"Saldo suficiente?"}
+    balance -->|"não"| rejected["Grava a rejeição e o evento"]
+    balance -->|"sim"| processed["Grava transação, ledger, saldo e evento"]
 
-    Note over DB,Q: Os eventos só saem depois do commit, em segundo plano
-    PUB->>DB: Busca eventos ainda não publicados
-    PUB->>Q: Publica
-    PUB->>DB: Marca como publicado
+    rejected --> commit["COMMIT"]
+    processed --> commit
+
+    commit --> answer["Resposta: 201 PROCESSED ou 422 REJECTED"]
+    commit -.->|"depois, em segundo plano"| publisher["Publisher envia o evento e o marca como publicado"]
+    publisher --> events[/"Fila wager-events"/]
+
+    classDef entrada fill:#dbeafe,stroke:#1d4ed8,color:#111827
+    classDef regra fill:#fef3c7,stroke:#b45309,color:#111827
+    classDef banco fill:#dcfce7,stroke:#15803d,color:#111827
+    classDef fundo fill:#f3f4f6,stroke:#4b5563,color:#111827
+    class provider,api,replay,conflict,answer entrada
+    class hash,key,balance regra
+    class lock,rejected,processed,commit banco
+    class publisher,events fundo
 ```
 
 O que o desenho resume:
 
 | Passo | No código |
 | --- | --- |
-| Serviço | Controller HTTP e `ProcessWagerTransactionUseCase` |
+| API HTTP e regras | Controller HTTP e `ProcessWagerTransactionUseCase` |
 | Mesmos dados de negócio | Mesmo `payloadHash`, o SHA-256 desses campos |
 | Essa chave já existe? | Busca por `provider_id` e `idempotency_key`, sem lock. Se duas requisições passarem juntas, o `UNIQUE` do banco decide: a segunda vira reenvio ou conflito |
 | Trava a wallet | `SELECT ... FOR NO KEY UPDATE`, a primeira instrução da transação SQL que toca a wallet |
@@ -225,17 +223,24 @@ O que o desenho resume:
 ### 3. Os estados de uma transação
 
 ```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> PENDING
-    PENDING --> PROCESSED : aplicada
-    PENDING --> REJECTED : recusada
-    PENDING --> PENDING_REFERENCE : falta a referência
-    PENDING_REFERENCE --> PROCESSED : referência chegou
-    PENDING_REFERENCE --> REJECTED : recusada ou desistiu
-    PROCESSED --> [*]
-    REJECTED --> [*]
+flowchart TD
+    pending["PENDING: transação nova"] -->|"falta a referência"| waiting["PENDING_REFERENCE: aguardando"]
+    pending -->|"aplicada"| processed["PROCESSED: fim"]
+    waiting -->|"referência chegou"| processed
+    waiting -->|"recusada ou desistiu"| rejected["REJECTED: fim"]
+    pending -->|"recusada"| rejected
+
+    classDef entrada fill:#dbeafe,stroke:#1d4ed8,color:#111827
+    classDef regra fill:#fef3c7,stroke:#b45309,color:#111827
+    classDef banco fill:#dcfce7,stroke:#15803d,color:#111827
+    classDef fundo fill:#f3f4f6,stroke:#4b5563,color:#111827
+    class pending entrada
+    class rejected regra
+    class processed banco
+    class waiting fundo
 ```
+
+Aqui as cores seguem a mesma ideia: azul é a transação que entra, cinza espera o trabalho em segundo plano, verde foi aplicada no banco e amarelo foi barrada por uma regra.
 
 | Estado | Significa | Ainda muda? |
 | --- | --- | --- |
