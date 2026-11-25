@@ -2,9 +2,9 @@ import { z } from 'zod';
 import type { ProcessWagerResult } from '../../application/process-wager-transaction.use-case';
 import type { MoneyProps } from '../../domain/money';
 import { type WagerTransaction, WagerTransactionKind, WagerTransactionStatus } from '../../domain/wager-transaction';
-import { moneySchema, uuidSchema } from './wallets.dto';
+import { moneySchema, textSchema, uuidSchema } from './wallets.dto';
 
-const identifier = z.string().min(1).max(255);
+const identifier = textSchema(255);
 
 const K = WagerTransactionKind;
 const SUBMITTABLE_KINDS = [K.Bet, K.Win, K.Loss, K.Refund, K.Rollback] as const;
@@ -36,7 +36,7 @@ export function checkReferenceRules(ctx: z.core.ParsePayload<{ kind: string; ext
 
 export const SubmitTransactionBody = z.strictObject(wagerFields).check(checkReferenceRules);
 
-export const IdempotencyKeyHeader = z.string().trim().min(1).max(255);
+export const IdempotencyKeyHeader = z.string().trim().pipe(textSchema(255));
 /** Opcional: quem chama pode rastrear a requisição. Limite igual ao do `messageId` do SQS, que cumpre o mesmo papel. */
 export const CorrelationIdHeader = z.string().trim().min(1).max(128).optional();
 export const TransactionIdParam = uuidSchema;

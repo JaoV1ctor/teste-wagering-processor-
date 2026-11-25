@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { ProcessWagerCommand } from '../../application/process-wager-transaction.use-case';
 import type { MoneyProps } from '../../domain/money';
 import { checkReferenceRules, wagerFields } from '../http/wagering.dto';
+import { textSchema } from '../http/wallets.dto';
 
 /** Único `type` de mensagem aceito na fila de entrada. */
 export const WAGER_TRANSACTION_REQUESTED = 'WagerTransactionRequested';
@@ -40,7 +41,7 @@ export class UnknownMessageTypeError extends MalformedMessageError {
 
 /** Limite de 128 porque o `messageId` é o `MessageDeduplicationId` do produtor (máximo da AWS). */
 const Envelope = z.strictObject({
-  messageId: z.string().min(1).max(128),
+  messageId: textSchema(128),
   type: z.string().min(1),
   /** Validado (faz parte do contrato da mensagem), mas não é usado: a ordem vem do SQS FIFO e do banco, não do relógio do produtor. */
   occurredAt: z.iso.datetime(),
@@ -49,7 +50,7 @@ const Envelope = z.strictObject({
 
 /** Mesmos campos e regras do POST /wagering/transactions, mais a chave de idempotência no corpo (não há header no SQS). */
 const WagerTransactionData = z
-  .strictObject({ ...wagerFields, idempotencyKey: z.string().min(1).max(255) })
+  .strictObject({ ...wagerFields, idempotencyKey: textSchema(255) })
   .check(checkReferenceRules);
 
 export interface ParsedWagerMessage {

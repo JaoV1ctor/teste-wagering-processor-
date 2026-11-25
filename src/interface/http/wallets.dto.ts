@@ -32,6 +32,13 @@ export const moneySchema = z
  */
 export const uuidSchema = z.uuid().toLowerCase();
 
+/** U+0000 não cabe em `text` no Postgres, e um surrogate solto não existe em UTF-8: nenhum dos dois seria gravado como veio. */
+const UNSTORABLE = /[\u0000\p{Surrogate}]/u;
+
+/** Todo texto livre que entra (HTTP ou SQS) e pode ser gravado passa por aqui: 1 a `max` caracteres, armazenáveis. */
+export const textSchema = (max: number) =>
+  z.string().min(1).max(max).refine((value) => !UNSTORABLE.test(value), { message: 'Texto com caractere que não pode ser armazenado' });
+
 export const CreateWalletBody = z.strictObject({ playerId: uuidSchema, initialBalance: moneySchema });
 export const WalletIdParam = uuidSchema;
 export const LedgerQuery = z.strictObject({

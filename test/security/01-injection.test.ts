@@ -109,6 +109,19 @@ securityCase('SQL injection na Idempotency-Key e no x-correlation-id', 'aceitos 
 securityCase('Unicode incomum válido (emoji, controle de direção, largura zero, combinantes)', 'aceito como dado e gravado exatamente', () =>
   storedLiterally(['🎲💸', 'abc‮cba', 'a​b﻿', 'é ≠ é', '￿', 'linha separadora', 'ＦＵＬＬ']));
 
+/** O Postgres não guarda U+0000 em texto, e um surrogate solto não existe em UTF-8: nenhum dos dois pode ser gravado como veio. */
+const UNSTORABLE = ['a\u0000b', '\u0000', 'a\uD800', '\uDC00b', 'a\uDC00\uD800b'];
+
+securityCase('Byte nulo e surrogate solto em campos de texto do corpo', '400 (nunca 500 nem 503, que mandariam reenviar); banco inalterado', () =>
+  expectRejected(env.probe, UNSTORABLE.flatMap((value, index) =>
+    FREE_TEXT.map((field): Attempt => [`${field}[${index}]`, () => submit(payloadWith(field, `${value}-${uuid()}`))]))));
+
+securityCase('Byte nulo em ids de rota', '400; banco inalterado', () =>
+  expectRejected(env.probe, [
+    '/providers/a%00b/wagering/transactions/x', '/providers/p/wagering/transactions/a%00b', '/providers/%00/wagering/transactions/%00',
+    '/wallets/%00', '/wagering/transactions/%00', `/wallets/${wallet.walletId}/ledger?cursor=%00`,
+  ].map((path): Attempt => [path, () => send(env.api, 'GET', path)])));
+
 securityCase('CR e LF dentro de campos do corpo', 'aceitos como dado; nenhum cabeçalho injetado; logs continuam uma linha JSON por evento', async () => {
   const value = 'x\r\nSet-Cookie: injected=1\r\n\r\n{"level":"error","message":"forjada"}';
   const logs = captureLogs();
