@@ -472,7 +472,8 @@ correto sob duplicação, redelivery, queda de worker e várias instâncias (REA
 
 ```
 ReceiveMessage (long polling 20 s, lote <= 10, VisibilityTimeout configurável)
-  └─ despacho por MessageGroupId (= walletId): grupos diferentes em paralelo (limite SQS_CONSUMER_CONCURRENCY); o mesmo grupo encadeado
+  └─ despacho por MessageGroupId (= walletId): grupos diferentes em paralelo (limite SQS_CONSUMER_CONCURRENCY); o mesmo grupo encadeado,
+     e a seguinte só começa se a anterior saiu da fila (senão volta com ChangeMessageVisibility(0), sem ser processada)
        └─ WagerMessageHandler.handle(body, ApproximateReceiveCount)
             1. parseWagerMessage (zod): envelope + data. type desconhecido ou payload inválido => erro PERMANENTE
             2. ProcessWagerTransactionUseCase.execute(command, { consumerName, messageId })
@@ -541,9 +542,22 @@ que era processada (reproduzido em teste: um segundo débito sob a mesma `messag
 
 ### Concorrência dentro do processo
 
-`QueueConsumer` mantém `concurrency` mensagens em voo. Mensagens de **grupos diferentes** correm em paralelo; as do **mesmo grupo** são encadeadas (uma `Promise` por `MessageGroupId`), inclusive quando o SQS
-devolve várias do mesmo grupo no mesmo lote (o MiniStack devolve, como a AWS). Isso preserva a ordem por wallet e evita disputa de lock, mas **não é garantia de correção**: entre processos,
-quem garante é o lock da wallet + inbox + idempotência no banco. Nenhum estado em memória decide algo financeiro.
+`QueueConsumer` mantém `concurrency` mensagens em voo. Mensagens de **grupos diferentes** correm em paralelo; as do **mesmo grupo** são encadeadas (uma cadeia de `Promise` por `MessageGroupId`), inclusive quando o SQS
+devolve várias do mesmo grupo no mesmo lote (o MiniStack devolve).
+
+**Precedência dentro do grupo (correção após revisão independente).** Antes, a cadeia só esperava a anterior **terminar**, não **dar certo**: com saldo 0, um `WIN 100.00` que falhava de forma transitória era adiado
+e a `BET 80.00` do mesmo lote era processada e **rejeitada** por saldo; o crédito chegava depois (reproduzido em teste). A regra agora é: **a seguinte só começa se a anterior saiu da fila**.
+
+| Fim da mensagem da frente | As seguintes do grupo já recebidas |
+| --- | --- |
+| ack (qualquer resultado de negócio) | processadas, na ordem |
+| falha permanente copiada para a DLQ **e** confirmada | processadas: a da frente não será mais aplicada |
+| falha transitória (adiada) | não começam: `ChangeMessageVisibility(0)`, na ordem do lote |
+| falha no ack, no `ChangeMessageVisibility` ou no envio à DLQ; handler que lança | idem |
+
+As devolvidas continuam bloqueadas pela própria FIFO enquanto a da frente está invisível (ela é de um grupo com mensagem em voo) e são reentregues depois dela. A parada vale só para o que já estava em memória: uma entrega
+posterior do grupo começa uma cadeia nova (que ainda espera a antiga terminar de devolver). Outros grupos não são afetados. A parada é local ao processo; entre processos a precedência é a do SQS FIFO.
+**Não é isso que protege o dinheiro**: saldo, idempotência e `messageId` são garantidos pelo lock da wallet e pelos índices únicos no banco. Esta regra preserva a **ordem de aplicação** das mensagens, que muda o resultado de negócio.
 
 ### Shutdown (`SIGTERM`)
 
@@ -570,7 +584,7 @@ Além disso, o cenário "morre antes do commit" usa um **processo filho real** m
 | Camada | Arquivos | O que prova |
 | --- | --- | --- |
 | Unidade | `inbox-message`, `wager-message` (zod), `visibility-backoff`, `wager-message-handler`, `consumer-config`, `app-shutdown` | Domínio do inbox; cada caso de payload malformado; backoff e teto; classificação ack/retry/DLQ; validação da config; ordem do encerramento |
-| Integração (Postgres + MiniStack reais) | `process-wager-inbox`, `sqs-replay-inbox`, `sqs-consumer`, `sqs-app`, `send-wager-message-cli` | Inbox na mesma transação (atomicidade com falha injetada em 4 pontos, 20 entregas simultâneas); replay por mensagem registra o inbox sem travar a wallet; HTTP, depois replay por SQS, depois a mesma `messageId` com outro conteúdo vai à DLQ sem debitar; ack só após o commit; `REJECTED` com ack; duplicata, redelivery com `messageId` novo, ordem por wallet; Postgres fora (sem ack, backoff 1 s, 2 s) e 5 recebimentos até a DLQ com `MessageGroupId`; payloads inválidos, conflito e wallet inexistente na DLQ com `FailureReason`; paralelismo entre grupos com limite e serialização do grupo; shutdown devolvendo em andamento e não iniciadas; `AppModule` real; CLI produtor |
+| Integração (Postgres + MiniStack reais) | `process-wager-inbox`, `sqs-replay-inbox`, `sqs-group-order` (precedência no grupo: adiamento com 0 e 2 s, três mensagens, outro grupo em paralelo, falha de ack, de visibilidade, de DLQ e handler que lança, DLQ bem-sucedida que não segura o grupo, esgotamento dos 5 recebimentos), `sqs-consumer`, `sqs-app`, `send-wager-message-cli` | Inbox na mesma transação (atomicidade com falha injetada em 4 pontos, 20 entregas simultâneas); replay por mensagem registra o inbox sem travar a wallet; HTTP, depois replay por SQS, depois a mesma `messageId` com outro conteúdo vai à DLQ sem debitar; ack só após o commit; `REJECTED` com ack; duplicata, redelivery com `messageId` novo, ordem por wallet; Postgres fora (sem ack, backoff 1 s, 2 s) e 5 recebimentos até a DLQ com `MessageGroupId`; payloads inválidos, conflito e wallet inexistente na DLQ com `FailureReason`; paralelismo entre grupos com limite e serialização do grupo; shutdown devolvendo em andamento e não iniciadas; `AppModule` real; CLI produtor |
 | Concorrência | `test/concurrency/sqs-consumer.test.ts` | **#5** (ack falha depois do commit: a reentrega é duplicata do inbox, 1 débito, 1 inbox, ledger íntegro; também com 4 wallets); **#5b** (processo morto por `SIGKILL` antes do commit: 0 efeitos, reentrega processa 1 vez); 2 consumidores com pools próprios disputando 144 mensagens (48 fatos, duplicatas e reenvios): exatamente 48 processamentos; wallet quente com 2 consumidores: 5 `PROCESSED` e 3 `REJECTED` na ordem de envio |
 
 Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) em todos os testes que movem saldo.
@@ -580,11 +594,17 @@ Invariante final (`wallet.balance == saldo reconstruído pelo ledger`) em todos 
 | Mutação | Resultado |
 | --- | --- |
 | `acknowledge` antes de `handle` (ack antes do commit) | Falham `ack SOMENTE depois do commit` (a transação ainda não existia no instante do ack) e **#5b** (a mensagem é apagada, o processo morre antes do commit e nada é reprocessado); falham também os testes que dependem da mensagem permanecer na fila até o commit |
+| Consumidor sem a regra de precedência (a seguinte só espera a anterior terminar) | Falham 9 dos 10 testes de `sqs-group-order`; no cenário principal a `BET` termina `REJECTED` e sobra só o crédito de 100,00. O que continua passando é o da DLQ bem-sucedida, em que seguir é o correto |
 | Sem inbox (`origin` ignorado no caso de uso) | Falham 23 testes de integração e concorrência: inbox gravado, duplicata pelo inbox, `messageId` reutilizado, atomicidade do inbox, 20 entregas simultâneas, #5. A mesma **chave** continua sem débito duplicado (a idempotência segura sozinha), mas uma `messageId` reutilizada com **outra** transação passa a ser processada |
 | Replay volta a retornar antes do inbox (código anterior à correção) | Falham 10 testes: `sqs-replay-inbox` (a `messageId` reutilizada debita de novo), registro do inbox no replay e a redelivery reconhecida como duplicata (#5) |
 
 ### Limitações e o que o MiniStack não garante frente ao SQS real
 
+- **As seguintes gastam recebimentos junto com a da frente.** Devolvidas sem processar, elas têm o `ApproximateReceiveCount` incrementado a cada lote. Se a da frente falhar nos 5 recebimentos, as que vieram no mesmo lote vão **junto** à DLQ, na ordem, sem nunca terem sido executadas (testado no MiniStack). A ordem é preservada, mas o reprocesso da DLQ precisa incluí-las. `wager_retries_total{source="queue"}` conta só a adiada, e o redrive do SQS não é contado.
+- **A DLQ quebra a ordem.** Depois de uma falha permanente as seguintes são aplicadas; reenviar a mensagem da DLQ mais tarde a aplica fora da ordem original. O mesmo vale para uma da frente movida pelo redrive quando as seguintes ainda têm recebimentos sobrando.
+- **Ordem não cobre `PENDING_REFERENCE` nem o HTTP.** Uma mensagem que fica pendente é confirmada, então as seguintes são aplicadas antes de ela se resolver; requisições HTTP não têm ordem em relação à fila.
+- **Visibilidade vencida na espera.** Não há heartbeat: se um grupo demorar mais que o `VisibilityTimeout` para chegar numa mensagem já recebida, o SQS pode reentregá-la a outro consumidor. O saldo segue correto (banco); a ordem, nesse caso, não é garantida.
+- **A precedência depende da FIFO bloquear o grupo** enquanto há mensagem em voo. Verificado só no MiniStack, não na AWS.
 - **Mensagem que vai à DLQ não fica no inbox.** O inbox é gravado na transação do processamento, e a falha permanente (wallet inexistente, conflito de idempotência) faz `ROLLBACK`. A mesma `messageId` enviada depois com conteúdo válido é processada; o rastro da primeira é a DLQ, não o inbox.
 - **Sem retenção do inbox**: `inbox_messages` só cresce.
 - **Long polling abortado ainda vive no servidor.** No shutdown abortamos o `ReceiveMessage` no cliente, mas a espera continua do lado do servidor (observado no MiniStack; é plausível que o SQS real se comporte igual, mas isso não foi verificado): uma mensagem que chegue nesses segundos pode ficar invisível até `VisibilityTimeout` vencer e depois é reentregue. Não se perde nem se duplica efeito; só atrasa.
