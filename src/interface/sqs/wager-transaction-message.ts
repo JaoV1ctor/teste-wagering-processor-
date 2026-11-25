@@ -3,10 +3,10 @@ import type { ProcessWagerCommand } from '../../application/process-wager-transa
 import type { MoneyProps } from '../../domain/money';
 import { checkReferenceRules, wagerFields } from '../http/wagering.dto';
 
-/** README §10. */
+/** Único `type` de mensagem aceito na fila de entrada. */
 export const WAGER_TRANSACTION_REQUESTED = 'WagerTransactionRequested';
 
-/** Forma da mensagem na fila (README §10), do lado de quem produz: dinheiro sempre como string decimal. */
+/** Forma da mensagem na fila, do lado de quem produz: dinheiro sempre como string decimal. */
 export interface WagerTransactionRequested {
   messageId: string;
   type: typeof WAGER_TRANSACTION_REQUESTED;
@@ -42,12 +42,12 @@ export class UnknownMessageTypeError extends MalformedMessageError {
 const Envelope = z.strictObject({
   messageId: z.string().min(1).max(128),
   type: z.string().min(1),
-  /** Validado (faz parte do contrato do README §10), mas não é usado: a ordem vem do SQS FIFO e do banco, não do relógio do produtor. */
+  /** Validado (faz parte do contrato da mensagem), mas não é usado: a ordem vem do SQS FIFO e do banco, não do relógio do produtor. */
   occurredAt: z.iso.datetime(),
   data: z.unknown(),
 });
 
-/** Mesmos campos e regras do POST /wagering/transactions (SPEC §6 passo 0), mais a chave de idempotência no corpo (não há header no SQS). */
+/** Mesmos campos e regras do POST /wagering/transactions, mais a chave de idempotência no corpo (não há header no SQS). */
 const WagerTransactionData = z
   .strictObject({ ...wagerFields, idempotencyKey: z.string().min(1).max(255) })
   .check(checkReferenceRules);

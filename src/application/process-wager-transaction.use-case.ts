@@ -10,7 +10,7 @@ import { computePayloadHash } from './payload-hash';
 import type { Repositories, UnitOfWork } from './ports';
 import { settleLocked } from './settle-locked-transaction';
 
-/** Entrada única do caso de uso: HTTP hoje, SQS na Fase 4. Os campos de negócio entram no `payloadHash`; a chave não. */
+/** Entrada única do caso de uso, para HTTP e SQS. Os campos de negócio entram no `payloadHash`; a chave não. */
 export interface ProcessWagerCommand {
   idempotencyKey: string;
   providerId: string;
@@ -44,7 +44,7 @@ export interface DuplicateMessageResult {
 }
 
 /**
- * SPEC §6. Idempotência decidida pelo banco (UNIQUE), nunca por estado em memória.
+ * Idempotência decidida pelo banco (UNIQUE), nunca por estado em memória.
  * Ordem de locks e escrita: wallet -> transação -> ledger -> outbox. A transação nasce PENDING no domínio e é gravada UMA vez, no estado final
  * (PROCESSED, REJECTED ou PENDING_REFERENCE, quando a referência ainda não chegou; o worker a resolve depois).
  * Os eventos de integração entram no outbox como ÚLTIMO passo da MESMA transação SQL: sem commit, não há evento.
@@ -80,7 +80,7 @@ export class ProcessWagerTransactionUseCase {
     if (known && !origin) return replayOf(known, payloadHash);
 
     return this.uow.run(async (repositories) => {
-      // SPEC §6 passo 3: o inbox entra na MESMA transação, antes do lock da wallet (não toca a wallet, então a ordem de locks não muda).
+      // O inbox entra na MESMA transação, antes do lock da wallet (não toca a wallet, então a ordem de locks não muda).
       const inbox = origin ? await this.receive(repositories, origin, payloadHash) : undefined;
       if (inbox === 'duplicate') return { duplicateMessage: true as const };
 

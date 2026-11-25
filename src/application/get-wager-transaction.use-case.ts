@@ -2,7 +2,7 @@ import type { WagerTransaction } from '../domain/wager-transaction';
 import { WagerTransactionNotFoundError } from './errors';
 import type { UnitOfWork } from './ports';
 
-/** Consultas (SPEC §5.3): leitura sem lock, devolvem o último estado commitado. */
+/** Consultas: leitura sem lock, devolvem o último estado commitado. */
 export class GetWagerTransactionUseCase {
   constructor(private readonly uow: UnitOfWork) {}
 

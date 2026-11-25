@@ -13,7 +13,7 @@ export interface IntegrationEventProps<T> extends EventContext {
   data: T;
 }
 
-/** Envelope serializado: é exatamente o que vai no `payload` do outbox e no corpo da mensagem publicada (README §11). */
+/** Envelope serializado: é exatamente o que vai no `payload` do outbox e no corpo da mensagem publicada. */
 export interface IntegrationEventEnvelope<T> {
   eventId: string;
   eventType: string;

@@ -20,7 +20,7 @@ export interface SettlementContext {
 }
 
 /**
- * Liquida uma transação PENDING ou PENDING_REFERENCE contra a wallet (README §7, SPEC §3 e §4) e a deixa em um destes estados:
+ * Liquida uma transação PENDING ou PENDING_REFERENCE contra a wallet e a deixa em um destes estados:
  *   PROCESSED (BET debita, WIN credita, LOSS só registra, REFUND/ROLLBACK aplicam o inverso da referência),
  *   REJECTED com um `failureCode` (divergência de player/moeda, regras da referência, saldo), ou
  *   PENDING_REFERENCE quando a referência ainda não existe (reagendada com backoff; esgotado o limite, REJECTED/REFERENCE_NOT_FOUND).
@@ -60,7 +60,7 @@ function divergenceFrom(wallet: Wallet, transaction: WagerTransaction): FailureC
 
 /**
  * Regras da referência, na ordem em que o provedor as corrige: de quem é a transação, que tipo é, se foi aplicada, se o valor
- * confere e se já foi revertida. A primeira violação decide (README §7 regras 2 a 5; SPEC §5.1).
+ * confere e se já foi revertida. A primeira violação decide.
  */
 function referenceViolation(transaction: WagerTransaction, reference: WagerTransaction, alreadyReversed: boolean): FailureCode | undefined {
   const sameOwner =
@@ -98,7 +98,7 @@ function post(wallet: Wallet, transaction: WagerTransaction, reference: WagerTra
   return entry;
 }
 
-/** Débito sem saldo: BET é INSUFFICIENT_BALANCE; reversão é REVERSAL_WOULD_OVERDRAW (SPEC §3.11). Crédito acima do limite: BALANCE_LIMIT_EXCEEDED. */
+/** Débito sem saldo: BET é INSUFFICIENT_BALANCE; reversão é REVERSAL_WOULD_OVERDRAW. Crédito acima do limite: BALANCE_LIMIT_EXCEEDED. */
 function rejectionFor(error: unknown, kind: WagerTransactionKind): FailureCode | undefined {
   if (error instanceof InsufficientBalanceError) return kind === K.Bet ? FailureCode.InsufficientBalance : FailureCode.ReversalWouldOverdraw;
   if (error instanceof MoneyOverflowError) return FailureCode.BalanceLimitExceeded;

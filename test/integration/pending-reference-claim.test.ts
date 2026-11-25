@@ -1,4 +1,4 @@
-// Claim por lease do worker de PENDING_REFERENCE (SPEC D7): FOR UPDATE SKIP LOCKED, lotes disjuntos. Postgres REAL.
+// Claim por lease do worker de PENDING_REFERENCE: FOR UPDATE SKIP LOCKED, lotes disjuntos. Postgres REAL.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { Migrator } from '@mikro-orm/migrations';

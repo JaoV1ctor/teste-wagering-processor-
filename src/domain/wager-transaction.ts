@@ -23,7 +23,7 @@ export enum WagerTransactionStatus {
 const K = WagerTransactionKind;
 const S = WagerTransactionStatus;
 
-/** Tipos que cada tipo pode referenciar (README §7 regra 3; WIN/LOSS só a BET, SPEC §3.4). Quem não aparece não referencia nada. */
+/** Tipos que cada tipo pode referenciar (WIN/LOSS só a BET). Quem não aparece não referencia nada. */
 const REFERENCEABLE_KINDS: Partial<Record<WagerTransactionKind, readonly WagerTransactionKind[]>> = {
   [K.Refund]: [K.Bet],
   [K.Rollback]: [K.Bet, K.Win, K.Refund],
@@ -49,7 +49,7 @@ export interface WagerTransactionState {
   status: WagerTransactionStatus;
   referenceTransactionId: string | undefined;
   failureCode: FailureCode | undefined;
-  /** Saldo da wallet visto ao decidir; é o que um replay devolve (SPEC §3.2). */
+  /** Saldo da wallet visto ao decidir; é o que um replay devolve. */
   observedBalance: Money | undefined;
   attempts: number;
   nextAttemptAt: Date | undefined;
@@ -64,7 +64,7 @@ export type CreateWagerTransactionProps = Pick<
 > & { referenceExternalTransactionId?: string; now: Date };
 
 /**
- * Transições (SPEC §4):
+ * Transições:
  *   PENDING           -> PROCESSED | REJECTED | FAILED | PENDING_REFERENCE
  *   PENDING_REFERENCE -> PROCESSED | REJECTED | FAILED | PENDING_REFERENCE (reagendamento)
  *   PROCESSED, REJECTED, FAILED são terminais; PENDING_REFERENCE nunca volta a PENDING.

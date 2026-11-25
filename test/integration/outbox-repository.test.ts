@@ -1,4 +1,4 @@
-// OutboxRepository (SPEC D7): persistência do envelope e claim por lease com FOR UPDATE SKIP LOCKED. Postgres REAL.
+// OutboxRepository: persistência do envelope e claim por lease com FOR UPDATE SKIP LOCKED. Postgres REAL.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { Migrator } from '@mikro-orm/migrations';

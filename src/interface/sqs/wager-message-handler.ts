@@ -37,7 +37,7 @@ export interface WagerMessageHandlerOptions {
 }
 
 /**
- * Traduz uma mensagem do SQS em uma chamada ao caso de uso e classifica o resultado (SPEC §8.1). Sem regra de negócio.
+ * Traduz uma mensagem do SQS em uma chamada ao caso de uso e classifica o resultado. Sem regra de negócio.
  *  - NEGÓCIO (PROCESSED, REJECTED, PENDING_REFERENCE, replay, duplicata do inbox): o commit já gravou o resultado => ack.
  *  - TRANSITÓRIO (`TransientInfrastructureError`: Postgres fora, 40P01, 40001, 55P03, retry esgotado) => sem ack, backoff.
  *  - PERMANENTE (malformada, tipo desconhecido, conflito, wallet inexistente, bug) => DLQ explícita e depois ack.

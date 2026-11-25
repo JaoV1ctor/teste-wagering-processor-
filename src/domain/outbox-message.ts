@@ -17,7 +17,7 @@ export interface OutboxMessageState {
 }
 
 /**
- * Evento a publicar (README §6.5). Nasce na MESMA transação SQL do fato que descreve e só sai do estado "pendente" quando alguém
+ * Evento a publicar. Nasce na MESMA transação SQL do fato que descreve e só sai do estado "pendente" quando alguém
  * confirma a publicação (`markPublished`). Quem publica reivindica por lease; a exclusão mútua é do banco, não desta classe.
  */
 export class OutboxMessage {

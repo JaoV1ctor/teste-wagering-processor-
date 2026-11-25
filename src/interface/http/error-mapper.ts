@@ -19,7 +19,7 @@ export interface HttpErrorResponse {
 const CODE_BY_STATUS: Record<number, string> = { 400: 'BAD_REQUEST', 404: 'NOT_FOUND', 413: 'PAYLOAD_TOO_LARGE', 415: 'UNSUPPORTED_MEDIA_TYPE' };
 
 /**
- * Mapeamento único de erro -> HTTP (SPEC §5.2): o provedor decide reenviar (503), corrigir (400/409) ou desistir (422)
+ * Mapeamento único de erro -> HTTP: o provedor decide reenviar (503), corrigir (400/409) ou desistir (422)
  * só pelo status e pelo `code`. Qualquer outra coisa é bug nosso: 500 genérico, sem vazar mensagem interna.
  */
 export function toHttpError(error: unknown): HttpErrorResponse {

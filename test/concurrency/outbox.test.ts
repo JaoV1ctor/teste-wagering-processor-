@@ -1,4 +1,4 @@
-// Cenários #6 e #8 (SPEC §10; README §11), com PROCESSOS reais, Postgres e MiniStack reais.
+// Cenários #6 e #8 do enunciado, com PROCESSOS reais, Postgres e MiniStack reais.
 //  #6: dois publishers na mesma outbox => nenhum evento perdido; duplicata segura e contada.
 //  #8: reinício do serviço: commit, o processo morre ANTES de publicar, outro sobe => o evento sai e a consistência final fecha.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';

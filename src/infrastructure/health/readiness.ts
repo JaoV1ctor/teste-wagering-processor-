@@ -17,7 +17,7 @@ export interface ReadinessOptions {
 }
 
 /**
- * Readiness (SPEC §8.4): o serviço está pronto se TODAS as dependências respondem dentro do prazo. Sem estado: cada chamada verifica de novo,
+ * Readiness: o serviço está pronto se TODAS as dependências respondem dentro do prazo. Sem estado: cada chamada verifica de novo,
  * então a recuperação de uma dependência é vista na chamada seguinte. Uma verificação que ignora o `signal` e nunca resolve também vira `down`
  * no prazo (a corrida com o timeout é do checker, não da verificação).
  */

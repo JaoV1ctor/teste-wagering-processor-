@@ -1,4 +1,4 @@
-// GET /metrics (SPEC §8.4; README §12). Aplicação real sobre Postgres REAL: o formato Prometheus e os VALORES depois de operações reais
+// GET /metrics. Aplicação real sobre Postgres REAL: o formato Prometheus e os VALORES depois de operações reais
 // (aposta processada, duplicata, rejeição, pendência). Cada `startApi()` tem o seu registry, então os valores são absolutos.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
@@ -34,7 +34,7 @@ const EXPECTED_TYPES: Record<string, string> = {
 };
 
 describe('formato (exposição Prometheus)', () => {
-  test('200, content-type do formato texto e HELP/TYPE de cada métrica da SPEC §8.4 com o tipo certo', async () => {
+  test('200, content-type do formato texto e HELP/TYPE de cada métrica do serviço com o tipo certo', async () => {
     const res = await fetch(`${api.url}/metrics`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toStartWith('text/plain; version=0.0.4');
@@ -51,7 +51,7 @@ describe('formato (exposição Prometheus)', () => {
     for (const sample of page.samples) expect(Number.isNaN(sample.value)).toBe(false);
   });
 
-  test('sem autenticação e sem métricas do processo que não são nossas (só as nomeadas na SPEC)', async () => {
+  test('sem autenticação e sem métricas do processo que não são nossas (só as do serviço)', async () => {
     const page = await scrape(api);
     const names = new Set(page.samples.map((s) => s.name.replace(/_(bucket|sum|count)$/, '')));
     for (const name of names) expect(Object.keys(EXPECTED_TYPES)).toContain(name);

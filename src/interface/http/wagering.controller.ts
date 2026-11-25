@@ -15,7 +15,7 @@ interface StatusSetter {
   status(code: number): unknown;
 }
 
-/** Só traduz entrada e saída; a regra está em `ProcessWagerTransactionUseCase` (o mesmo que a Fase 4 usará para SQS). */
+/** Só traduz entrada e saída; a regra está em `ProcessWagerTransactionUseCase` (o mesmo do consumidor SQS). */
 @Controller()
 export class WageringController {
   constructor(

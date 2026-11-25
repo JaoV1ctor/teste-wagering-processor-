@@ -1,4 +1,4 @@
-// OutboxMessage (README §6.5) e a política de backoff do publisher (SPEC §8.2). Domínio puro: relógio e aleatoriedade entram por argumento.
+// OutboxMessage e a política de backoff do publisher. Domínio puro: relógio e aleatoriedade entram por argumento.
 import { describe, expect, test } from 'bun:test';
 import { InvalidOutboxMessageError } from '../../src/domain/errors';
 import type { IntegrationEvent } from '../../src/domain/events/integration-event';

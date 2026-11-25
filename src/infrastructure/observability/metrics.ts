@@ -5,7 +5,7 @@ import type { PersistenceObserver } from '../persistence/mikro-orm-unit-of-work'
 const SECONDS_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
 
 /**
- * Métricas do serviço (SPEC §8.4; README §12), em um `Registry` PRÓPRIO por aplicação (não o global do prom-client): vários módulos no mesmo
+ * Métricas do serviço, em um `Registry` PRÓPRIO por aplicação (não o global do prom-client): vários módulos no mesmo
  * processo (testes) não colidem nem somam valores. Só labels de cardinalidade fixa (status, kind, source); nunca ids.
  * Quem produz o dado chama estes métodos; `PersistenceObserver` e o observador do consumidor SQS são implementados aqui.
  */

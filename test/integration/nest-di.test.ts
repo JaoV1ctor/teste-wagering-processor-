@@ -1,4 +1,4 @@
-// Smoke de compatibilidade (SPEC §12.2): NestJS 12 sob Bun resolve DI por tipo (emitDecoratorMetadata) e sobe HTTP.
+// Smoke de compatibilidade: NestJS 12 sob Bun resolve DI por tipo (emitDecoratorMetadata) e sobe HTTP.
 import 'reflect-metadata';
 import { expect, test } from 'bun:test';
 import { Controller, Get, Injectable, Module } from '@nestjs/common';

@@ -1,4 +1,4 @@
-// Inbox (consumerName, messageId) na MESMA transação SQL do processamento (SPEC §6 passo 3). Postgres REAL; a falha é injetada no repositório.
+// Inbox (consumerName, messageId) na MESMA transação SQL do processamento. Postgres REAL; a falha é injetada no repositório.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { Migrator } from '@mikro-orm/migrations';

@@ -1,4 +1,4 @@
-// A abertura da wallet (OPENING) altera o saldo, então gera os mesmos eventos de qualquer outra transação aplicada (SPEC §3.9).
+// A abertura da wallet (OPENING) altera o saldo, então gera os mesmos eventos de qualquer outra transação aplicada.
 // Postgres REAL, aplicação real. Os eventos nascem na MESMA transação da criação (wallet -> transação -> ledger -> outbox).
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { type Api, newPlayerId, startApi } from '../support/app';

@@ -1,4 +1,4 @@
-// Política do worker de PENDING_REFERENCE (SPEC §3.10): 8 reprocessamentos, backoff exponencial com teto e jitter.
+// Política do worker de PENDING_REFERENCE: 8 reprocessamentos, backoff exponencial com teto e jitter.
 import { describe, expect, test } from 'bun:test';
 import { hasExhaustedReferenceAttempts, REFERENCE_RETRY, referenceRetryDelayMs } from '../../src/domain/reference-retry-policy';
 

@@ -16,7 +16,7 @@ export interface OutboxRow {
   published_at: Date | null;
 }
 
-/** Envelope como gravado no outbox e publicado na fila (README §11). `data` é livre por tipo de evento. */
+/** Envelope como gravado no outbox e publicado na fila. `data` é livre por tipo de evento. */
 export interface EventEnvelope {
   eventId: string;
   eventType: string;
@@ -52,7 +52,7 @@ export async function outboxOfWallet(probe: pg.Pool, walletId: string, { include
 export const typesOf = (rows: OutboxRow[]): string[] => rows.map((row) => row.event_type);
 
 /**
- * Invariante final (SPEC §10) estendida aos eventos: saldo == ledger; todo `WalletBalanceChanged` tem o lançamento correspondente
+ * Invariante final estendida aos eventos: saldo == ledger; todo `WalletBalanceChanged` tem o lançamento correspondente
  * (mesma transação, direção, valor, antes e depois) e todo lançamento, inclusive o de abertura (OPENING), tem o seu evento.
  */
 export async function expectEventsConsistentWithLedger(probe: pg.Pool, walletId: string): Promise<void> {

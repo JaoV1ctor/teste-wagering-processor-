@@ -1,4 +1,4 @@
-// Quais eventos nascem de uma liquidação (SPEC §3.9; README §11). Função pura: o estado final da transação e o lançamento decidem.
+// Quais eventos nascem de uma liquidação. Função pura: o estado final da transação e o lançamento decidem.
 import { describe, expect, test } from 'bun:test';
 import { integrationEventsFor } from '../../src/application/integration-events';
 import { FailureCode } from '../../src/domain/failure-code';

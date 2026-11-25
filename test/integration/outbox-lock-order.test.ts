@@ -1,4 +1,4 @@
-// Ordem de locks e de escrita com o outbox (SPEC §6): wallet -> transação -> ledger -> outbox. Lê o SQL REALMENTE emitido ao Postgres real.
+// Ordem de locks e de escrita com o outbox: wallet -> transação -> ledger -> outbox. Lê o SQL REALMENTE emitido ao Postgres real.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { Migrator } from '@mikro-orm/migrations';

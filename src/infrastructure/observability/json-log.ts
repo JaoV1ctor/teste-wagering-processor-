@@ -11,7 +11,7 @@ import { ConfigurationError } from '../env';
 export type LogLevel = 'info' | 'warn' | 'error';
 
 /**
- * ÚNICO ponto de saída de log da aplicação (SPEC §8.4): uma linha JSON por chamada, em stdout (info, warn) ou stderr (error).
+ * ÚNICO ponto de saída de log da aplicação: uma linha JSON por chamada, em stdout (info, warn) ou stderr (error).
  * Nada mais escreve em stdout/stderr (a regra `no-console` do ESLint barra `console.*` e o logger do Nest passa por aqui: ver `JsonLogger`).
  * Quem chama passa só identificadores (correlationId, messageId, transactionId, walletId, providerId) e o resultado; nunca payload, valor ou segredo.
  */

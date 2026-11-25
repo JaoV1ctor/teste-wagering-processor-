@@ -1,4 +1,4 @@
-// Atomicidade com o outbox: wallet + transação + ledger + evento, tudo ou nada (README §11). Postgres REAL; a falha é injetada no repositório.
+// Atomicidade com o outbox: wallet + transação + ledger + evento, tudo ou nada. Postgres REAL; a falha é injetada no repositório.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { Migrator } from '@mikro-orm/migrations';

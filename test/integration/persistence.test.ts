@@ -74,7 +74,7 @@ describe('MikroOrmUnitOfWork', () => {
     expect(typeof records[0]?.seq).toBe('bigint');
   });
 
-  test('ordem dos INSERTs: wallet -> transação -> ledger (SPEC §6)', async () => {
+  test('ordem dos INSERTs: wallet -> transação -> ledger', async () => {
     const { wallet, openingEntry, transaction } = opened('10.00');
     queries.length = 0;
     await uow.run(async ({ wallets, transactions, ledger }) => {

@@ -1,4 +1,4 @@
-// Ordem de locks do worker (SPEC D7, §6): o claim é uma transação própria e curta, sem wallet; o reprocesso trava a wallet PRIMEIRO
+// Ordem de locks do worker: o claim é uma transação própria e curta, sem wallet; o reprocesso trava a wallet PRIMEIRO
 // e só então escreve na transação e no ledger (wallet -> transação -> ledger). Lê o SQL REALMENTE emitido ao Postgres real.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';

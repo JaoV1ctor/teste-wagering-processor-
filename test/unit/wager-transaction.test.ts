@@ -61,7 +61,7 @@ describe('create: referência por kind (espelha o CHECK do schema)', () => {
   });
 });
 
-describe('máquina de estados (SPEC §4)', () => {
+describe('máquina de estados', () => {
   test('PENDING -> PROCESSED guarda saldo observado, data e referência', () => {
     const tx = make(K.Refund, 'ext-bet');
     tx.markProcessed({ observedBalance: brl('125'), at: t1, referenceTransactionId: 'bet-id' });
@@ -151,7 +151,7 @@ describe('máquina de estados (SPEC §4)', () => {
   });
 });
 
-describe('PENDING_REFERENCE nunca volta a PENDING (SPEC §4; o trigger do banco repete a regra)', () => {
+describe('PENDING_REFERENCE nunca volta a PENDING (o trigger do banco repete a regra)', () => {
   const pending = () => {
     const tx = make(K.Refund, 'ext-bet');
     tx.markPendingReference(t1, t0);

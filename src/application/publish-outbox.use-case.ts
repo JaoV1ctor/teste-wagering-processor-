@@ -39,7 +39,7 @@ export interface PublishOutboxOptions {
 }
 
 /**
- * Publisher do outbox (SPEC §8.2, D7). `runOnce()` é uma passada: reivindica os eventos vencidos por lease (transação curta, sem I/O de rede
+ * Publisher do outbox. `runOnce()` é uma passada: reivindica os eventos vencidos por lease (transação curta, sem I/O de rede
  * dentro dela), publica cada um FORA de qualquer transação e só então grava `published_at` (outra transação curta).
  *  - Falha ao publicar: `attempts + 1` e `next_attempt_at` com backoff exponencial e jitter. O evento nunca é descartado.
  *    Se o lease venceu e outro publisher já reivindicou o evento, a falha atrasada não grava nada.

@@ -3,7 +3,7 @@ import type { EventPublisher } from '../../application/ports';
 import type { OutboxMessage } from '../../domain/outbox-message';
 
 /**
- * Publica os eventos na fila PADRÃO `wager-events` (SPEC D8). Fila padrão: sem `MessageGroupId`, sem deduplicação do SQS e sem garantia
+ * Publica os eventos na fila PADRÃO `wager-events`. Fila padrão: sem `MessageGroupId`, sem deduplicação do SQS e sem garantia
  * de ordem; o consumidor deduplica pelo `eventId` (atributo da mensagem e campo do envelope) e ordena por `walletVersion`.
  * Como `SqsMessageQueue`, a URL é resolvida por nome na primeira chamada e a falha não fica guardada.
  */

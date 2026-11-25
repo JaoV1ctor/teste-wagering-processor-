@@ -1,7 +1,7 @@
 import { backoffDelayMs } from './backoff';
 
 /**
- * Política do worker de PENDING_REFERENCE (SPEC §3.10, README §7.1). Os números são estimativas justificadas em docs/ARCHITECTURE.md.
+ * Política do worker de PENDING_REFERENCE. Os números são estimativas justificadas em docs/ARCHITECTURE.md.
  *
  * `attempts` conta as avaliações da referência que terminaram sem achá-la, incluindo a inicial feita na submissão.
  * Com 1 avaliação inicial + 8 reprocessamentos, a espera total (sem jitter) é 1+2+4+8+16+32+60+60 = 183s; com jitter de até +50%, até ~4,5 min.

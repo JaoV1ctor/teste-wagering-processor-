@@ -53,7 +53,7 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
 
   /**
    * `set_config(..., true)` é o `SET LOCAL` parametrizável: vale só nesta transação e não vaza para a conexão do pool.
-   * Precisa ser a 1ª instrução, antes do lock da wallet (SPEC D2); ela não toca tabela, então a ordem de locks não muda.
+   * Precisa ser a 1ª instrução, antes do lock da wallet; ela não toca tabela, então a ordem de locks não muda.
    * Esgotar o prazo dá 55P03, tratado como transitório (retry curto; esgotado, 503).
    */
   run<T>(work: (repositories: Repositories) => Promise<T>): Promise<T> {

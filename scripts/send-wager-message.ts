@@ -22,7 +22,7 @@ export interface WagerMessageInput {
   referenceExternalTransactionId?: string;
 }
 
-/** Monta a mensagem do README §10. A chave de idempotência padrão é `{providerId}:{externalTransactionId}` (README §9). */
+/** Monta a mensagem da fila de entrada. A chave de idempotência padrão é `{providerId}:{externalTransactionId}`. */
 export function buildWagerMessage(input: WagerMessageInput, now: Date = new Date()): WagerTransactionRequested {
   const externalTransactionId = input.externalTransactionId ?? `ext-${randomUUID()}`;
   return {

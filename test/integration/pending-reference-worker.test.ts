@@ -1,4 +1,4 @@
-// Worker de PENDING_REFERENCE (SPEC §8.3, §3.10; README §7.1) e cenário #7 (SPEC §10). Postgres REAL; a API é a aplicação de verdade.
+// Worker de PENDING_REFERENCE e cenário #7. Postgres REAL; a API é a aplicação de verdade.
 // O tempo é simulado por um relógio injetado e congelado: o teste decide quando as tentativas vencem (nada de sleep).
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
@@ -182,7 +182,7 @@ describe('cenário #7: reversão antes da referência => PENDING_REFERENCE => a 
   });
 });
 
-describe('limite de tentativas (SPEC §3.10): 1 avaliação inicial + 8 reprocessamentos', () => {
+describe('limite de tentativas: 1 avaliação inicial + 8 reprocessamentos', () => {
   test('o agendamento recua 2s, 4s, 8s, 16s, 32s e 60s (teto) a cada reprocessamento sem referência', async () => {
     const wallet = await openWallet(api, '100.00');
     const early = await post(wagerPayload(wallet, { kind: 'REFUND', referenceExternalTransactionId: 'bet-que-nunca-chega' }));
@@ -218,7 +218,7 @@ describe('limite de tentativas (SPEC §3.10): 1 avaliação inicial + 8 reproces
     expect(replay.status).toBe(422);
     expect(replay.body).toEqual({ transactionId: early.body.transactionId, status: 'REJECTED', balance: money('100.00'), idempotentReplay: true, failureCode: 'REFERENCE_NOT_FOUND' });
 
-    // Ação prescrita na SPEC §5.1: enviar a transação referenciada e uma nova reversão (novo externalTransactionId).
+    // Ação que o provedor deve tomar: enviar a transação referenciada e uma nova reversão (novo externalTransactionId).
     expect((await post(bet)).status).toBe(201);
     const again = await post(reversalPayload(wallet, bet, 'REFUND'));
     expect(again.status).toBe(201);

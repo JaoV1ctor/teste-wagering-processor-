@@ -1,4 +1,4 @@
-// Eventos de integração gravados no outbox NA MESMA transação do processamento (SPEC §3.9, §8.2; README §11). Postgres REAL, aplicação real.
+// Eventos de integração gravados no outbox NA MESMA transação do processamento. Postgres REAL, aplicação real.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { Migrator } from '@mikro-orm/migrations';

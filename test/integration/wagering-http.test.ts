@@ -1,4 +1,4 @@
-// Endpoints /wagering (SPEC §5.2 e §5.3) com a aplicação real sobre Postgres REAL.
+// Endpoints /wagering com a aplicação real sobre Postgres REAL.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { type Api, startApi } from '../support/app';

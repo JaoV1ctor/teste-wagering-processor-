@@ -58,7 +58,7 @@ function handlerWith(outcome: () => Promise<ProcessWagerResult | DuplicateMessag
   return { handler, calls, logs };
 }
 
-describe('WagerMessageHandler: classificação de erros (SPEC §8.1)', () => {
+describe('WagerMessageHandler: classificação de erros', () => {
   test('usa o MESMO caso de uso, com o comando da mensagem e a origem (consumerName, messageId)', async () => {
     const { handler, calls } = handlerWith(async () => processed());
     await handler.handle(body, 1);

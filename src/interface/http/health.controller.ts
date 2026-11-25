@@ -8,7 +8,7 @@ interface StatusSetter {
   status(code: number): unknown;
 }
 
-/** Sem autenticação (README §9): quem consulta é o orquestrador. */
+/** Sem autenticação: quem consulta é o orquestrador. */
 @OpenRoute()
 @Controller('health')
 export class HealthController {

@@ -34,7 +34,7 @@ export interface ReprocessOptions {
 }
 
 /**
- * Worker de PENDING_REFERENCE (SPEC §8.3, D7). `runOnce()` é uma passada: reivindica as vencidas por lease (outra transação, curta)
+ * Worker de PENDING_REFERENCE. `runOnce()` é uma passada: reivindica as vencidas por lease (outra transação, curta)
  * e reprocessa cada uma em uma transação normal, na MESMA ordem de locks do caso de uso de submissão: wallet primeiro,
  * depois relê a transação (outro processo pode tê-la resolvido), decide com `settleLocked` e grava transação -> wallet -> ledger -> outbox.
  * Correto com N instâncias: o claim entrega lotes disjuntos e o lock da wallet serializa o resto.
@@ -82,7 +82,7 @@ export class ReprocessPendingReferencesUseCase {
   async reprocessOne({ id, walletId }: ClaimedPendingReference): Promise<ReprocessOutcome> {
     // O resultado sai da transação junto com a transação de domínio: `run` pode reexecutar `work`, então nada é guardado fora dele.
     const { outcome, transaction } = await this.uow.run(async ({ wallets, transactions, ledger, outbox }) => {
-      const wallet = await wallets.lockWallet(walletId); // primeira instrução que toca a wallet (SPEC D2)
+      const wallet = await wallets.lockWallet(walletId); // primeira instrução que toca a wallet
       if (!wallet) throw new WalletNotFoundError(walletId);
 
       const transaction = await transactions.findById(id);

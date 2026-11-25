@@ -1,6 +1,6 @@
 /**
- * Códigos estáveis e legíveis por máquina (SPEC §5.1). Todos rejeitam, exceto `INTERNAL_PERMANENT_ERROR` (status FAILED).
- * `BALANCE_LIMIT_EXCEEDED` acrescenta à SPEC: crédito que ultrapassaria o máximo de NUMERIC(19,2); o provedor não reenvia, a operação escala.
+ * Códigos estáveis e legíveis por máquina (tabela em docs/ARCHITECTURE.md, "Fase 3"). Todos rejeitam, exceto `INTERNAL_PERMANENT_ERROR` (status FAILED).
+ * `BALANCE_LIMIT_EXCEEDED`: crédito que ultrapassaria o máximo de NUMERIC(19,2); o provedor não reenvia, a operação escala.
  */
 export enum FailureCode {
   InsufficientBalance = 'INSUFFICIENT_BALANCE',

@@ -78,7 +78,7 @@ export async function seedCredits(probe: pg.Pool, walletId: string, count: numbe
   }
 }
 
-/** Invariante final (SPEC §10): saldo da wallet == saldo reconstruído pelo ledger. */
+/** Invariante final: saldo da wallet == saldo reconstruído pelo ledger. */
 export async function ledgerBalance(probe: pg.Pool, walletId: string): Promise<{ stored: string; rebuilt: string; entries: number }> {
   const { rows } = await probe.query<{ stored: string; rebuilt: string; entries: string }>(
     `select w.balance::text as stored,

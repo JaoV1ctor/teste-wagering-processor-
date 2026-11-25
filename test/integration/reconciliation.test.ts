@@ -1,4 +1,4 @@
-// POST /wallets/:walletId/reconciliation (SPEC §5.3, §8.4; README §9). Postgres REAL, aplicação real.
+// POST /wallets/:walletId/reconciliation. Postgres REAL, aplicação real.
 // A divergência é provocada por SQL direto (trigger desligado só dentro de uma transação do teste) e tem de ser DETECTADA e NÃO corrigida.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';

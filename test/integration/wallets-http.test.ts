@@ -1,4 +1,4 @@
-// Endpoints de wallet (SPEC §5.3) com a aplicação real sobre Postgres REAL.
+// Endpoints de wallet com a aplicação real sobre Postgres REAL.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { type Api, newPlayerId, startApi } from '../support/app';

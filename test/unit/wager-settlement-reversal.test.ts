@@ -1,4 +1,4 @@
-// REFUND/ROLLBACK e referências (README §7, SPEC §3 e §5.1). Domínio puro: sem banco.
+// REFUND/ROLLBACK e referências. Domínio puro: sem banco.
 import { describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { FailureCode } from '../../src/domain/failure-code';
@@ -229,7 +229,7 @@ describe('precedência das regras (a primeira violação decide, de forma determ
   });
 });
 
-describe('referência ausente => PENDING_REFERENCE (README §7 regra 8 e §7.1)', () => {
+describe('referência ausente => PENDING_REFERENCE (regra 8 do enunciado)', () => {
   test('sem referência: fica PENDING_REFERENCE, sem tocar a wallet, 1ª tentativa agendada para +1s', () => {
     const wallet = walletWith('70.00');
     const tx = make(wallet, K.Refund, { reference: 'ext-bet' });

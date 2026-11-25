@@ -1,6 +1,6 @@
 -- =============================================================================
 -- 001_init.up.sql — Distributed Wagering Processor
--- Princípio: o BANCO é a última linha de defesa das invariantes (README §5.9).
+-- Princípio: o BANCO é a última linha de defesa das invariantes (unicidade, imutabilidade e não-negatividade no schema).
 -- A aplicação também valida, mas nada aqui depende de a aplicação estar certa.
 -- =============================================================================
 
@@ -62,18 +62,18 @@ CREATE TABLE wager_transactions (
   reference_transaction_id          uuid          REFERENCES wager_transactions(id),
   status                            text          NOT NULL CHECK (status IN ('PENDING','PENDING_REFERENCE','PROCESSED','REJECTED','FAILED')),
   failure_code                      text,
-  observed_balance                  numeric(19,2) CHECK (observed_balance >= 0), -- saldo visto ao decidir; usado no replay (regra 7)
+  observed_balance                  numeric(19,2) CHECK (observed_balance >= 0), -- saldo visto ao decidir; usado no replay
   attempts                          integer       NOT NULL DEFAULT 0 CHECK (attempts >= 0),
   next_attempt_at                   timestamptz,
   created_at                        timestamptz   NOT NULL DEFAULT now(),
   updated_at                        timestamptz   NOT NULL DEFAULT now(),
   processed_at                      timestamptz,
 
-  -- Idempotência persistente: duas chaves de unicidade (ver SPEC §4)
+  -- Idempotência persistente: duas chaves de unicidade
   CONSTRAINT wt_idempotency_key_uq UNIQUE (idempotency_key),
   CONSTRAINT wt_external_id_uq     UNIQUE (provider_id, external_transaction_id),
 
-  -- REFUND/ROLLBACK exigem referência; BET/OPENING não têm; WIN/LOSS podem ter (regra 1 e interpretação 6)
+  -- REFUND/ROLLBACK exigem referência; BET/OPENING não têm; WIN/LOSS podem ter (ver docs/ARCHITECTURE.md, "Fase 3")
   CONSTRAINT wt_reference_by_kind CHECK (
        (kind IN ('REFUND','ROLLBACK') AND reference_external_transaction_id IS NOT NULL)
     OR (kind IN ('WIN','LOSS'))
@@ -91,7 +91,7 @@ CREATE TABLE wager_transactions (
   )
 );
 
--- Reversão única: no máximo UMA reversão efetiva por transação referenciada (interpretação 1 / regra 4).
+-- Reversão única: no máximo UMA reversão efetiva por transação referenciada (ver docs/ARCHITECTURE.md, "Fase 3").
 -- Mesmo que a aplicação falhe, o banco impede crédito duplicado por REFUND+ROLLBACK da mesma BET.
 CREATE UNIQUE INDEX wt_one_effective_reversal_uq
   ON wager_transactions (reference_transaction_id)
@@ -161,7 +161,7 @@ CREATE TABLE wallet_ledger_entries (
   created_at     timestamptz   NOT NULL DEFAULT now(),
   -- a moeda do lançamento tem de ser a da wallet
   CONSTRAINT le_wallet_currency_fk FOREIGN KEY (wallet_id, currency) REFERENCES wallets (id, currency),
-  -- no máximo 1 lançamento por transação por wallet (README §6.4)
+  -- no máximo 1 lançamento por transação por wallet
   CONSTRAINT le_one_per_tx_wallet_uq UNIQUE (transaction_id, wallet_id),
   -- aritmética do lançamento (isBalanced no domínio, repetido no banco)
   CONSTRAINT le_balanced CHECK (

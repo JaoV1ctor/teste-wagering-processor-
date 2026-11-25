@@ -1,4 +1,4 @@
-// Ordem do encerramento (README §10, SPEC §8.1): consumidor, worker e publisher do outbox param ANTES de o ORM fechar. Unidade: fakes só registram a ordem das chamadas.
+// Ordem do encerramento: consumidor, worker e publisher do outbox param ANTES de o ORM fechar. Unidade: fakes só registram a ordem das chamadas.
 import 'reflect-metadata';
 import { expect, test } from 'bun:test';
 import type { SQSClient } from '@aws-sdk/client-sqs';

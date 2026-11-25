@@ -1,5 +1,5 @@
-// Comportamento do MikroORM 7 sobre locks (SPEC D2): o ORM só emite FOR UPDATE; FOR NO KEY UPDATE exige SQL parametrizado.
-// Postgres REAL do compose. Fundamenta a escolha de lock da Fase 2 (docs/ARCHITECTURE.md).
+// Comportamento do MikroORM 7 sobre locks: o ORM só emite FOR UPDATE; FOR NO KEY UPDATE exige SQL parametrizado.
+// Postgres REAL do compose. Fundamenta a escolha de lock (docs/ARCHITECTURE.md).
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { LockMode } from '@mikro-orm/core';

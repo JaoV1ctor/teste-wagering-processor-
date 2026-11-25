@@ -1,4 +1,4 @@
-// Logs estruturados (SPEC §8.4; README §12): JSON de uma linha, com correlationId/messageId/transactionId/walletId/providerId e SEM payload
+// Logs estruturados: JSON de uma linha, com correlationId/messageId/transactionId/walletId/providerId e SEM payload
 // nem PII. O teste inspeciona o que a aplicação REAL escreve em stdout/stderr (Postgres real; aplicação real).
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';

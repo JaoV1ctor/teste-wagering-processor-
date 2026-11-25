@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { ESLint } from 'eslint';
 
-/** Prova que a regra de lint barra `number` para dinheiro em `src/` (README §14: eliminatório). */
+/** Prova que a regra de lint barra `number` para dinheiro em `src/` (falha eliminatória no enunciado). */
 const eslint = new ESLint({ cwd: process.cwd() });
 
 async function messages(code: string, filePath = 'src/domain/fixture.ts'): Promise<string[]> {

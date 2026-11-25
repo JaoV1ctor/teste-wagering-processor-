@@ -1,4 +1,4 @@
-// Regras de BET/WIN/LOSS sobre a wallet (SPEC §3.5, §3.8 e §4). Domínio puro: sem banco.
+// Regras de BET/WIN/LOSS sobre a wallet. Domínio puro: sem banco.
 import { describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { InvalidWagerTransactionError } from '../../src/domain/errors';

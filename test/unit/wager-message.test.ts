@@ -11,8 +11,8 @@ const envelope = (overrides: Record<string, unknown> = {}) => ({
 });
 const parse = (value: unknown) => parseWagerMessage(typeof value === 'string' ? value : JSON.stringify(value));
 
-describe('parseWagerMessage (README §10)', () => {
-  test('mensagem do README vira messageId + comando com Money (nunca number)', () => {
+describe('parseWagerMessage', () => {
+  test('mensagem do enunciado vira messageId + comando com Money (nunca number)', () => {
     const parsed = parse(envelope());
     expect(parsed.messageId).toBe('msg-123');
     expect(parsed.command.idempotencyKey).toBe('provider-a:transaction-123');

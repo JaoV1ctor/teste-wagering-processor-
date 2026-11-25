@@ -1,4 +1,4 @@
-// Publisher do outbox (SPEC §8.2, D7; README §11): claim por lease, publicação na fila `wager-events` REAL (MiniStack), backoff e recuperação.
+// Publisher do outbox: claim por lease, publicação na fila `wager-events` REAL (MiniStack), backoff e recuperação.
 // O tempo é um relógio injetado: o teste decide quando lease e backoff vencem (nada de sleep). Postgres e SQS reais.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';

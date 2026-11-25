@@ -13,7 +13,7 @@ export type ReceiveInboxMessageProps = Pick<InboxMessageState, 'consumerName' | 
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
-/** Registro de dedup de uma mensagem de entrada (README §6.5). A chave `(consumerName, messageId)` é imposta pelo banco (PK). */
+/** Registro de dedup de uma mensagem de entrada. A chave `(consumerName, messageId)` é imposta pelo banco (PK). */
 export class InboxMessage {
   private constructor(private state: InboxMessageState) {}
 

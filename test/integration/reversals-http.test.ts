@@ -1,4 +1,4 @@
-// REFUND/ROLLBACK e referências: README §7 (regras 1 a 9) e SPEC §3, §5.1, §5.2, pela API real sobre Postgres REAL.
+// REFUND/ROLLBACK e referências: regras de reversão 1 a 9 do enunciado, pela API real sobre Postgres REAL.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { type Api, startApi } from '../support/app';
@@ -180,7 +180,7 @@ describe('regra 3: tipos referenciáveis', () => {
   });
 });
 
-describe('regra 4 e SPEC §3.1: no máximo UMA reversão efetiva por transação referenciada', () => {
+describe('regra 4: no máximo UMA reversão efetiva por transação referenciada', () => {
   test('REFUND duas vezes (ids externos diferentes): o 2º é REJECTED/ALREADY_REVERSED e não credita', async () => {
     const { wallet, bet } = await walletWithBet();
     expect((await post(reversalPayload(wallet, bet, 'REFUND'))).status).toBe(201);
@@ -353,7 +353,7 @@ describe('regra 9: reversão que deixaria saldo negativo', () => {
   });
 });
 
-describe('WIN e LOSS com referenceExternalTransactionId (SPEC §3.4): aceito, validado como o REFUND e entra no payloadHash', () => {
+describe('WIN e LOSS com referenceExternalTransactionId: aceito, validado como o REFUND e entra no payloadHash', () => {
   test('WIN que referencia a BET da rodada: 201 e referência gravada', async () => {
     const { wallet, bet, betId } = await walletWithBet();
     const res = await post(wagerPayload(wallet, { kind: 'WIN', money: money('80.00'), referenceExternalTransactionId: bet.externalTransactionId }));

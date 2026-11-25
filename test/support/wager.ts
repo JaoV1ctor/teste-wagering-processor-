@@ -35,7 +35,7 @@ export function reversalPayload(
   });
 }
 
-/** Chave padrão recomendada pelo README: `{providerId}:{externalTransactionId}`. */
+/** Chave padrão recomendada pelo enunciado: `{providerId}:{externalTransactionId}`. */
 export const defaultKey = (payload: Pick<WagerPayload, 'providerId' | 'externalTransactionId'>): string =>
   `${payload.providerId}:${payload.externalTransactionId}`;
 

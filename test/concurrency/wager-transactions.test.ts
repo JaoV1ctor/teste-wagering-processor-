@@ -1,4 +1,4 @@
-// Concorrência real (Postgres real, requisições HTTP simultâneas) em POST /wagering/transactions. SPEC §10, cenários #1, #2 e #3.
+// Concorrência real (Postgres real, requisições HTTP simultâneas) em POST /wagering/transactions. Cenários #1, #2 e #3.
 // Invariante final em todos: wallet.balance == saldo reconstruído pelo ledger.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { type Api, startApi } from '../support/app';

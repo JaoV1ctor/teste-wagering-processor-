@@ -1,4 +1,4 @@
-// Envelope dos eventos de integração (README §11): eventType e version moram no TIPO; data só com MoneyProps (strings); JSON estável.
+// Envelope dos eventos de integração: eventType e version moram no TIPO; data só com MoneyProps (strings); JSON estável.
 import { describe, expect, test } from 'bun:test';
 import { IntegrationEvent } from '../../src/domain/events/integration-event';
 import { WagerTransactionPendingReference } from '../../src/domain/events/wager-transaction-pending-reference';

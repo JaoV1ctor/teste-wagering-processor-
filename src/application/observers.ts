@@ -27,7 +27,7 @@ export interface ProcessingObserver {
 
 export const NO_PROCESSING_OBSERVER: ProcessingObserver = { completed: () => undefined };
 
-/** Resultado de uma reconciliação (README §9). Dinheiro como string decimal; `difference` pode ser negativa, por isso não é `Money`. */
+/** Resultado de uma reconciliação. Dinheiro como string decimal; `difference` pode ser negativa, por isso não é `Money`. */
 export interface WalletReconciliation {
   walletId: string;
   storedBalance: { amount: string; currency: string };

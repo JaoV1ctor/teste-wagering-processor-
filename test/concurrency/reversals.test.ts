@@ -1,4 +1,4 @@
-// Concorrência de reversões e do worker de PENDING_REFERENCE (SPEC §3.1, §8.3, §10). Postgres REAL, paralelismo real (HTTP simultâneo
+// Concorrência de reversões e do worker de PENDING_REFERENCE. Postgres REAL, paralelismo real (HTTP simultâneo
 // e processos filhos). Invariante final em todos: wallet.balance == saldo reconstruído pelo ledger.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
@@ -34,7 +34,7 @@ const effectiveReversals = async (wallet: Wallet) =>
     "select count(*)::text as n from wager_transactions where wallet_id = $1 and kind in ('REFUND','ROLLBACK') and status = 'PROCESSED'", [wallet.walletId],
   )).rows[0]?.n;
 
-describe('reversões concorrentes da mesma transação: no máximo UMA efetiva (SPEC §3.1)', () => {
+describe('reversões concorrentes da mesma transação: no máximo UMA efetiva', () => {
   test('REFUND e ROLLBACK da mesma BET ao mesmo tempo (20 rodadas): 1 PROCESSED, 1 REJECTED/ALREADY_REVERSED, crédito uma única vez', async () => {
     for (let round = 0; round < 20; round += 1) {
       const { wallet, bet } = await walletWithBet();

@@ -1,4 +1,4 @@
-// Cenário #4 (SPEC §10): 3 PROCESSOS reais (child_process), cada um com sua instância da aplicação e seu pool, contra o mesmo Postgres.
+// Cenário #4: 3 PROCESSOS reais (child_process), cada um com sua instância da aplicação e seu pool, contra o mesmo Postgres.
 // Nenhum estado de correção em memória: a corretude vem do banco (UNIQUE + lock da wallet).
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';

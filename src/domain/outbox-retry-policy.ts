@@ -1,7 +1,7 @@
 import { backoffDelayMs } from './backoff';
 
 /**
- * Backoff do publisher do outbox (SPEC §8.2). Estimativas justificadas em docs/ARCHITECTURE.md:
+ * Backoff do publisher do outbox. Estimativas justificadas em docs/ARCHITECTURE.md:
  *  - base 1 s: uma falha isolada (timeout, throttling) costuma passar na tentativa seguinte, sem atrasar o evento por muito tempo.
  *  - teto 60 s: com o SQS fora por minutos, cada evento tenta no máximo 1x por minuto (sem martelar o serviço quando ele volta),
  *    e o atraso depois da recuperação fica limitado a ~1,5 min.

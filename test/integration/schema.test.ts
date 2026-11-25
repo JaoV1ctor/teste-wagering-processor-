@@ -1,8 +1,7 @@
-// Porte de reference/schema.test.mjs para `bun test`. Postgres REAL (docker compose), sem mocks.
-// As expectativas (SQL, regex de erro, números) são as do arquivo de referência. Mudanças apenas de forma:
-//  - cada caso virou `test(...)`, na mesma ordem (alguns casos compartilham W/T);
-//  - conexão vem de DATABASE_URL; schema aplicado via migration (e não `psql -f`);
-//  - o protótipo de corrida usa bigint em centavos em vez de Number (regra: nunca number para dinheiro).
+// Constraints, triggers e corridas do schema com SQL cru. Postgres REAL (docker compose), sem mocks.
+//  - a ordem dos casos importa (alguns compartilham W/T);
+//  - conexão vem de DATABASE_URL; schema aplicado via migration;
+//  - o protótipo de corrida usa bigint em centavos (nunca number para dinheiro).
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import pg from 'pg';
@@ -34,7 +33,7 @@ async function tx(fn: (c: Conn) => Promise<unknown>): Promise<TxResult> {
     await c.query('COMMIT');
     return { ok: true };
   } catch (e) {
-    try { await c.query('ROLLBACK'); } catch { /* conexão já abortada: o erro original é o que importa */ }
+    try { await c.query('ROLLBACK'); } catch { /* conexão já abortada: o erro da transação é o que importa */ }
     return { ok: false, err: e as Error };
   } finally {
     c.release();
@@ -161,7 +160,7 @@ describe('Idempotência, estados terminais e reversão única', () => {
 });
 
 // ---------------------------------------------------------------------------
-// CORRIDAS REAIS (conexões paralelas). Protótipo do caso de uso (SQL cru): valida o PADRÃO da Fase 2.
+// CORRIDAS REAIS (conexões paralelas). Protótipo do caso de uso (SQL cru): valida o PADRÃO de lock.
 // Dinheiro em bigint (centavos) mesmo aqui; "100.00" <-> 10000n.
 const toCents = (s: string): bigint => BigInt(s.replace('.', ''));
 const fromCents = (n: bigint): string => `${n / 100n}.${(n % 100n).toString().padStart(2, '0')}`;
@@ -204,7 +203,7 @@ async function processBet(w: Wallet, key: string, amount: string, { lock = true,
     await c.query(`UPDATE wager_transactions SET status='PROCESSED', observed_balance=$2, processed_at=now() WHERE id=$1`, [id, after]);
     await c.query('COMMIT'); return { status: 'PROCESSED' };
   } catch (e) {
-    try { await c.query('ROLLBACK'); } catch { /* o erro original é o relevante */ }
+    try { await c.query('ROLLBACK'); } catch { /* o erro da transação é o relevante */ }
     return { error: (e as Error).message };
   } finally { c.release(); }
 }
@@ -221,7 +220,7 @@ const snapshot = async (w: Wallet) => {
 };
 
 describe('CORRIDAS REAIS (conexões paralelas)', () => {
-  test('§8 cenário obrigatório: 2 apostas de 80 em saldo 100 → PROCESSED+REJECTED, saldo 20.00, 1 débito', async () => {
+  test('cenário obrigatório: 2 apostas de 80 em saldo 100 → PROCESSED+REJECTED, saldo 20.00, 1 débito', async () => {
     const w = await openWallet('100.00');
     const res = await Promise.all([processBet(w, uuid(), '80.00'), processBet(w, uuid(), '80.00')]);
     const s = await snapshot(w); const st = res.map((r) => r.status).sort();
@@ -231,7 +230,7 @@ describe('CORRIDAS REAIS (conexões paralelas)', () => {
     expect(s.rebuilt).toBe(s.balance);
   });
 
-  test('§13#1: 50 envios paralelos da mesma aposta → 1 processada, 49 replays, saldo 90.00, 1 débito', async () => {
+  test('#1: 50 envios paralelos da mesma aposta → 1 processada, 49 replays, saldo 90.00, 1 débito', async () => {
     const w = await openWallet('100.00'); const key = uuid();
     const res = await Promise.all(Array.from({ length: 50 }, () => processBet(w, key, '10.00')));
     const s = await snapshot(w);
@@ -255,7 +254,7 @@ describe('CORRIDAS REAIS (conexões paralelas)', () => {
     expect(s.version).toBe(11);
   });
 
-  // Informativo no original (só imprime). Aqui imprime igual e, além disso, trava a REGRA: 0 deadlocks e estado consistente.
+  // Imprime a comparação entre as ordens de lock e trava a REGRA: 0 deadlocks e estado consistente.
   test('ordem de lock: anti-padrão vs regra (3 rodadas de 30 apostas na mesma wallet)', async () => {
     const report: Record<string, { dead: number; procs: number; consistent: boolean }> = {};
     for (const [label, opts] of [
@@ -276,7 +275,7 @@ describe('CORRIDAS REAIS (conexões paralelas)', () => {
     expect(regra.dead).toBe(0);
     expect(regra.procs).toBe(30); // 10 por rodada × 3
     expect(regra.consistent).toBe(true);
-  }, 120_000); // o anti-padrão espera deadlock_timeout (1s) várias vezes; o original não tinha limite de tempo
+  }, 120_000); // o anti-padrão espera deadlock_timeout (1s) várias vezes, acima do limite padrão de 5 s
 
   test('20 wallets distintas em paralelo, todas consistentes', async () => {
     const ws = await Promise.all(Array.from({ length: 20 }, () => openWallet('100.00')));

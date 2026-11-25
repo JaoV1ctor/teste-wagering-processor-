@@ -7,7 +7,7 @@ import {
 import { InsufficientBalanceError, InvalidMoneyError } from '../../src/domain/errors';
 import { toHttpError } from '../../src/interface/http/error-mapper';
 
-describe('toHttpError (SPEC §5.2)', () => {
+describe('toHttpError', () => {
   test('payload inválido -> 400 VALIDATION_ERROR com detalhes por campo', () => {
     const parsed = z.strictObject({ playerId: z.uuid() }).safeParse({ playerId: 'x' });
     const { status, body } = toHttpError(parsed.error);

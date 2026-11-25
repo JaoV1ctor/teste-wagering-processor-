@@ -1,9 +1,4 @@
-# docker-compose.yml — infraestrutura local do desafio (Fase 0)
-# ATENÇÃO — itens a VERIFICAR na Fase 0 (não pude testar Docker no ambiente de planejamento):
-#   1) imagem do MiniStack: VERIFICADA na Fase 0 (ministackorg/ministack, MIT, tag fixa);
-#   2) suporte a FIFO, MessageGroupId, DLQ/redrive e ChangeMessageVisibility: coberto por test/integration/sqs.test.ts.
-# LocalStack exige conta + auth token desde 23/03/2026. Plano B: LocalStack com tag fixa da Community
-# (a própria LocalStack sugere "pin" de versão antiga, p.ex. 4.12 — sem patches de segurança).
+# Infraestrutura local: PostgreSQL e MiniStack (SQS). A aplicação roda fora do compose (`bun run start`).
 
 services:
   postgres:
@@ -21,13 +16,8 @@ services:
       retries: 20
 
   aws:
-    # Fase 0: imagem original (nahuelnucera/ministack) NÃO existe no Docker Hub. Trocada por esta (MIT, sem conta/token).
+    # MiniStack: licença MIT, sem conta nem token; tag fixa.
     image: ministackorg/ministack:1.5.44
     ports: ["4566:4566"]
     environment:
       AWS_DEFAULT_REGION: us-east-1
-    # --- Plano B (descomente e comente o bloco acima):
-    # image: localstack/localstack:4.12     # tag fixa; confirmar que sobe sem LOCALSTACK_AUTH_TOKEN
-    # environment: { SERVICES: sqs }
-
-  # A aplicação entra aqui na Fase 7 (Dockerfile multi-stage, USER node, sem segredos na imagem).

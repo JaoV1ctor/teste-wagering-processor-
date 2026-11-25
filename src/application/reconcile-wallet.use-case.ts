@@ -9,7 +9,7 @@ export interface ReconcileWalletInput {
 }
 
 /**
- * Reconciliação (README §9; SPEC §8.4): compara `wallets.balance` com a soma do ledger (CREDIT - DEBIT) e REPORTA. Nunca corrige: divergência vira
+ * Reconciliação: compara `wallets.balance` com a soma do ledger (CREDIT - DEBIT) e REPORTA. Nunca corrige: divergência vira
  * resposta (`consistent: false`), log de erro e métrica, e quem decide o que fazer é a operação. Só lê, sem lock da wallet: o repositório lê
  * saldo e ledger numa única instrução (um snapshot), então uma aposta concorrente nunca produz divergência que não existe.
  */

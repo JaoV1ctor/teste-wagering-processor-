@@ -1,4 +1,4 @@
-// ProcessWagerTransactionUseCase e repositórios de transação/wallet sobre Postgres REAL (SPEC §3 e §6). Nada é mockado.
+// ProcessWagerTransactionUseCase e repositórios de transação/wallet sobre Postgres REAL. Nada é mockado.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { Migrator } from '@mikro-orm/migrations';

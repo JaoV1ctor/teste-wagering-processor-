@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { MoneyProps } from '../domain/money';
 
-/** Campos que identificam o conteúdo de uma transação. Cabeçalhos e metadados de transporte ficam de fora (SPEC D5). */
+/** Campos que identificam o conteúdo de uma transação. Cabeçalhos e metadados de transporte ficam de fora. */
 export interface PayloadHashInput {
   providerId: string;
   externalTransactionId: string;

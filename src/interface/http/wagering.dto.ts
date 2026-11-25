@@ -16,14 +16,14 @@ export const wagerFields = {
   walletId: z.uuid(),
   roundId: identifier,
   gameId: identifier,
-  /** OPENING é interno (SPEC §3.6) e não entra. */
+  /** OPENING é interno e não entra. */
   kind: z.enum(SUBMITTABLE_KINDS),
   money: moneySchema.refine((money) => money.isPositive(), { message: 'Valor deve ser maior que zero' }),
   referenceExternalTransactionId: identifier.optional(),
 };
 
 /**
- * `referenceExternalTransactionId`: obrigatório em REFUND/ROLLBACK (README §7 regra 1), opcional em WIN/LOSS (SPEC §3.4),
+ * `referenceExternalTransactionId`: obrigatório em REFUND/ROLLBACK, opcional em WIN/LOSS,
  * proibido em BET e nunca igual ao próprio id. Validado na borda para o erro ser 400 (HTTP) ou DLQ (SQS), não falha do domínio.
  */
 export function checkReferenceRules(ctx: z.core.ParsePayload<{ kind: string; externalTransactionId: string; referenceExternalTransactionId?: string | undefined }>): void {
@@ -42,7 +42,7 @@ export const CorrelationIdHeader = z.string().trim().min(1).max(128).optional();
 export const TransactionIdParam = z.uuid();
 export const ProviderTransactionParams = z.strictObject({ providerId: identifier, externalTransactionId: identifier });
 
-/** SPEC §5.2: 201 processada, 422 rejeição de negócio, 202 aguardando referência. FAILED é terminal e não se reenvia: 422. */
+/** 201 processada, 422 rejeição de negócio, 202 aguardando referência. FAILED é terminal e não se reenvia: 422. */
 export function httpStatusFor(status: WagerTransactionStatus): number {
   switch (status) {
     case WagerTransactionStatus.Processed:
@@ -82,7 +82,7 @@ export interface TransactionResponse {
   processedAt: string | null;
 }
 
-/** `balance` é o saldo observado ao decidir: é o que um replay devolve (SPEC §3.2). */
+/** `balance` é o saldo observado ao decidir: é o que um replay devolve. */
 export const toSubmitResponse = ({ transaction, idempotentReplay }: ProcessWagerResult): SubmitResponse => ({
   transactionId: transaction.id,
   status: transaction.status,

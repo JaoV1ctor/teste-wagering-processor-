@@ -1,4 +1,4 @@
-// SPEC §10 cenário #5 e consumidores concorrentes. Postgres REAL, MiniStack REAL. O único dublê decora a fila real para "matar o worker".
+// Cenário #5 e consumidores concorrentes. Postgres REAL, MiniStack REAL. O único dublê decora a fila real para "matar o worker".
 // Invariante final em todos: wallet.balance == saldo reconstruído pelo ledger.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';

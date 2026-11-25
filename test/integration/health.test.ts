@@ -1,4 +1,4 @@
-// GET /health/live e /health/ready (SPEC §8.4; README §9). Aplicação real; as dependências "fora do ar" são endereços mortos de verdade
+// GET /health/live e /health/ready. Aplicação real; as dependências "fora do ar" são endereços mortos de verdade
 // (porta 9, recusa de conexão), nunca um mock. Ninguém derruba o Postgres/MiniStack compartilhados.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { type Api, startApi } from '../support/app';

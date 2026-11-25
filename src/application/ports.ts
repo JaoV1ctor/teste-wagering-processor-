@@ -21,7 +21,7 @@ export interface WalletRepository {
   findById(id: string): Promise<Wallet | undefined>;
   /**
    * Trava a linha (`SELECT ... FOR NO KEY UPDATE`) e devolve o estado já relido sob o lock; `undefined` se não existir.
-   * É o ÚNICO ponto que trava wallet e deve ser a primeira instrução que a toca na transação (SPEC D2).
+   * É o ÚNICO ponto que trava wallet e deve ser a primeira instrução que a toca na transação.
    */
   lockWallet(id: string): Promise<Wallet | undefined>;
   /** Grava saldo e `version` de uma wallet travada por `lockWallet` na MESMA transação. */
@@ -48,12 +48,12 @@ export interface WagerTransactionRepository {
    */
   update(transaction: WagerTransaction): Promise<void>;
   /**
-   * Claim por lease (SPEC D7): numa transação curta e SEM wallet, escolhe até `limit` PENDING_REFERENCE vencidas
+   * Claim por lease: numa transação curta e SEM wallet, escolhe até `limit` PENDING_REFERENCE vencidas
    * (`next_attempt_at <= now`) com `FOR UPDATE SKIP LOCKED` e as agenda para `leaseUntil`. Dois workers recebem lotes disjuntos;
    * se um morrer, a transação volta a ficar elegível quando o lease vencer. O processamento acontece depois, fora desta transação.
    */
   claimDuePendingReference(now: Date, limit: number, leaseUntil: Date): Promise<ClaimedPendingReference[]>;
-  /** Existe REFUND/ROLLBACK PROCESSED que reverte `referenceTransactionId`? (README §7 regra 4; SPEC §3.1). Só reversão efetiva conta. */
+  /** Existe REFUND/ROLLBACK PROCESSED que reverte `referenceTransactionId`? Só reversão efetiva conta. */
   hasEffectiveReversal(referenceTransactionId: string): Promise<boolean>;
   findByIdempotencyKey(idempotencyKey: string): Promise<WagerTransaction | undefined>;
   findByProviderExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined>;
@@ -109,7 +109,7 @@ export interface OutboxRepository {
   /** `INSERT` do evento. Último passo de uma transação (wallet -> transação -> ledger -> outbox), na MESMA transação SQL do fato. */
   add(message: OutboxMessage): Promise<void>;
   /**
-   * Claim por lease (SPEC D7): numa transação curta, escolhe até `limit` eventos não publicados e vencidos (`next_attempt_at <= now`)
+   * Claim por lease: numa transação curta, escolhe até `limit` eventos não publicados e vencidos (`next_attempt_at <= now`)
    * com `FOR UPDATE SKIP LOCKED` e os agenda para `leaseUntil`. Publishers concorrentes recebem lotes disjuntos; se um morrer,
    * o evento volta a ficar elegível quando o lease vencer. A publicação acontece depois, fora desta transação. Do mais antigo ao mais novo.
    */

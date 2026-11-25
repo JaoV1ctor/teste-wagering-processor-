@@ -1,4 +1,4 @@
-// Borda HTTP de /wagering (SPEC §5.2): validação do corpo/cabeçalho e mapeamento status de negócio -> HTTP.
+// Borda HTTP de /wagering: validação do corpo/cabeçalho e mapeamento status de negócio -> HTTP.
 import { describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import { FailureCode } from '../../src/domain/failure-code';
@@ -25,15 +25,15 @@ describe('SubmitTransactionBody', () => {
   });
 
   test.each([
-    ['OPENING (interno, SPEC §3.6)', { kind: 'OPENING' }],
-    ['REFUND sem referenceExternalTransactionId (README §7 regra 1)', { kind: 'REFUND' }],
-    ['ROLLBACK sem referenceExternalTransactionId (README §7 regra 1)', { kind: 'ROLLBACK' }],
+    ['OPENING (interno)', { kind: 'OPENING' }],
+    ['REFUND sem referenceExternalTransactionId (regra 1)', { kind: 'REFUND' }],
+    ['ROLLBACK sem referenceExternalTransactionId (regra 1)', { kind: 'ROLLBACK' }],
     ['BET com referenceExternalTransactionId', { referenceExternalTransactionId: 'x' }],
     ['referência para a própria transação', { kind: 'REFUND', referenceExternalTransactionId: 'transaction-123' }],
     ['referenceExternalTransactionId vazio', { kind: 'WIN', referenceExternalTransactionId: '' }],
     ['referenceExternalTransactionId que não é string', { kind: 'WIN', referenceExternalTransactionId: 7 }],
     ['tipo desconhecido', { kind: 'JACKPOT' }],
-    ['valor 0.00 (amount > 0, SPEC §3.5)', { money: { amount: '0.00', currency: 'BRL' } }],
+    ['valor 0.00 (amount > 0)', { money: { amount: '0.00', currency: 'BRL' } }],
     ['valor negativo', { money: { amount: '-1.00', currency: 'BRL' } }],
     ['3 casas decimais', { money: { amount: '10.005', currency: 'BRL' } }],
     ['valor como number JSON', { money: { amount: 10.5, currency: 'BRL' } }],
@@ -52,7 +52,7 @@ describe('SubmitTransactionBody', () => {
     expect(parsed.referenceExternalTransactionId).toBe('bet-1');
   });
 
-  test.each(['WIN', 'LOSS'])('%s aceita referência opcional (SPEC §3.4), com ou sem ela', (kind) => {
+  test.each(['WIN', 'LOSS'])('%s aceita referência opcional, com ou sem ela', (kind) => {
     expect(SubmitTransactionBody.parse({ ...valid(), kind, referenceExternalTransactionId: 'bet-1' }).referenceExternalTransactionId).toBe('bet-1');
     expect(SubmitTransactionBody.parse({ ...valid(), kind }).referenceExternalTransactionId).toBeUndefined();
   });
@@ -85,7 +85,7 @@ describe('CorrelationIdHeader', () => {
   });
 });
 
-describe('httpStatusFor (SPEC §5.2)', () => {
+describe('httpStatusFor', () => {
   test.each([
     [WagerTransactionStatus.Processed, 201],
     [WagerTransactionStatus.Rejected, 422],
