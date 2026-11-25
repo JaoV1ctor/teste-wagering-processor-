@@ -28,22 +28,25 @@ Severidade: **alta** compromete dinheiro ou dados se o serviço for exposto; **m
 | 4 | Corpo de formulário era aceito: `POST /wallets` criava wallet a partir de um formulário, que uma página de outra origem envia sem preflight | baixa | **Corrigido**: `415` |
 | 5 | Sem autenticação nem autorização: qualquer chamador lê qualquer wallet e transação pelo id e envia transações em nome de qualquer provedor | alta | **Limitação declarada**; desenho e ponto de extensão em "Autenticação" no documento de arquitetura |
 | 6 | A porta de identidade do provedor só é consultada em `POST /wagering/transactions`; as consultas não passam por ela | baixa | Limitação; ligar a porta na consulta por provedor junto com a autenticação |
-| 7 | A `Idempotency-Key` é única no serviço inteiro: um provedor pode gravar antes a chave que outro usaria, e o legítimo recebe `409` permanente. Não há vazamento de dados | média | **Não corrigido**: exige migration e mudança de regra (`UNIQUE (provider_id, idempotency_key)`, ou exigir o provedor como prefixo da chave) |
-| 8 | Uma wallet travada esgota o pool de conexões de uma instância: requisições de **outras** wallets esperam e `/health/ready` responde `503`, o que poderia levar um orquestrador a agir sobre uma instância saudável | média | **Não corrigido**: propor teto para a espera total (`statement_timeout`), limite de requisições em voo por wallet e conexão separada para o readiness |
+| 7 | A `Idempotency-Key` era única no serviço inteiro: um provedor podia gravar antes a chave que outro usaria, e o legítimo recebia `409` permanente. Não havia vazamento de dados | média | **Corrigido**: `UNIQUE (provider_id, idempotency_key)`, por migration reversível; toda busca por chave filtra também pelo provedor |
+| 8 | Uma wallet travada esgota o pool de conexões de uma instância: requisições de **outras** wallets esperam e `/health/ready` responde `503`, o que poderia levar um orquestrador a agir sobre uma instância saudável | média | **Não corrigido**; caminho de evolução: teto de requisições em voo por wallet dentro da instância, `statement_timeout` para a espera total e uma conexão dedicada ao readiness |
 | 9 | Sem rate limiting | média | Limitação; aplicar no gateway, por provedor |
 | 10 | A fila de entrada não é autenticada: quem publica nela move qualquer wallet | média | Decisão de projeto (canal interno): a proteção é a política da fila (IAM) |
 | 11 | `docker-compose.yml` tem senha de desenvolvimento e publica as portas 5432 e 4566 em todas as interfaces | baixa | Limitação do ambiente local; restringir a `127.0.0.1` antes de usar em rede compartilhada |
 | 12 | Sem `Strict-Transport-Security`, `X-Content-Type-Options` e `Cache-Control` | informativa | Responsabilidade do proxy que terminar o TLS |
 | 13 | A mensagem de validação de valor ou moeda repete o texto enviado (em JSON, só para quem enviou; o tamanho é limitado pelo do corpo) | informativa | Mantido |
 | 14 | Chave repetida no JSON: vale a última ocorrência | informativa | Mantido; comportamento do `JSON.parse` |
+| 15 | Na fila, a deduplicação do inbox é por `(consumidor, messageId)`, não por provedor: quem publicar antes um `messageId` faz a mensagem legítima com o mesmo id ir à DLQ | média | **Não corrigido**: a fila é tratada como canal interno; produtores precisam de ids únicos entre si |
 
 Nos achados 1 a 4 o teste foi escrito primeiro, falhou e passou depois da correção (1 e 2 em um commit; 3 e 4 em um commit cada), com as suítes de unidade, integração e concorrência completas depois de cada um. Antes da correção, pela API, o byte nulo respondia `503` e o surrogate solto `500`; pela fila, a mensagem não chegou à DLQ nos 15 s do teste.
+
+O achado 7 foi corrigido depois, também com os testes primeiro: com a chave global falhavam 6 dos 7 testes de `test/integration/idempotency-scope.test.ts` e 2 dos 3 de `test/concurrency/idempotency-scope.test.ts`. Trocar o `providerId` de um payload copiado agora cria uma transação própria em vez de `409`; sem autenticação (achado 5), o mesmo débito já era possível trocando também a chave.
 
 ## Resultados
 
 Copiado do relatório gerado pela execução, sem edição.
 
-Execução de 2026-11-25T17:41:51.575Z, Bun 1.4.4: 91 casos em 10 categorias; 78 passaram, 13 confirmam limitações e 0 falharam.
+Execução de 2026-11-25T18:00:45.939Z, Bun 1.4.4: 92 casos em 10 categorias; 78 passaram, 14 confirmam limitações e 0 falharam.
 
 ### 1. Injeção e entradas malformadas
 
@@ -104,13 +107,13 @@ Execução de 2026-11-25T17:41:51.575Z, Bun 1.4.4: 91 casos em 10 categorias; 78
 
 | Caso | Esperado | Observado | Resultado |
 | --- | --- | --- | --- |
-| Mesma chave com cada campo de negócio diferente | 409 IDEMPOTENCY_CONFLICT; banco inalterado | 9 variações: 409×9; banco inalterado | passou |
-| PROVEDOR DIFERENTE usa a chave de outro, com a própria wallet | 409 sem resultado nem dado algum do primeiro; banco inalterado | 409 com corpo fixo (code e message); nenhum dado do primeiro provedor; banco inalterado | passou |
-| Provedor diferente copia chave e campos, trocando só o providerId | 409 sem dado do primeiro: o providerId entra no hash | 409; sem transactionId, saldo ou status do original | passou |
-| Dois provedores disputam a mesma chave ao mesmo tempo (20 rodadas) | um 201 e um 409; o 409 não traz dado do vencedor | 201×20, 409×20 em 20 rodadas; nenhum dado cruzado | passou |
+| Mesmo provedor, mesma chave, cada campo de negócio diferente | 409 IDEMPOTENCY_CONFLICT; banco inalterado | 8 variações: 409×8; banco inalterado | passou |
+| PROVEDOR DIFERENTE usa a chave de outro, com a própria wallet | 201 com transação própria; nada do primeiro na resposta; saldo do primeiro inalterado | 201, transação própria do segundo; saldo do primeiro inalterado e o replay dele continua o original | passou |
+| Provedor diferente copia chave e campos, trocando só o providerId | comportamento atual: nunca recebe o original, mas cria transação própria sobre a wallet citada (não há autenticação) | 201 sem o id nem o saldo do original; a wallet foi debitada de novo, em nome do segundo provedor | limitação confirmada |
+| Dois provedores usam a mesma chave ao mesmo tempo (20 rodadas) | os dois 201, cada um com a própria transação; nenhum dado cruzado | 201×40 em 20 rodadas; nenhum dado cruzado | passou |
 | Consulta por identidade do provedor é separada | 404 ao perguntar pelo id externo de outro sob o próprio providerId | 404 TRANSACTION_NOT_FOUND | passou |
 | Outro provedor tenta reverter a transação alheia citando o id externo | 202 pendente: a referência é resolvida dentro do próprio provedor; nada creditado | 202 PENDING_REFERENCE, balance null; saldo do primeiro inalterado | passou |
-| Ocupação antecipada da chave: B grava antes a chave que A usaria | comportamento atual: A recebe 409 de forma permanente (negação entre provedores) | B: 201; A com a chave recomendada: 409, 409; A só consegue com outra chave | limitação confirmada |
+| Ocupação antecipada da chave: B grava antes a chave que A usaria | A é aceito normalmente: a chave de B não ocupa a de A | B: 201; A: 201 e depois replay do próprio resultado | passou |
 | Replay idêntico, por quem conhece a chave e todos os campos | comportamento atual: devolve o resultado, porque nada identifica quem chama | sem autenticação, quem conhece o payload inteiro e a chave recebe o resultado como o próprio provedor | limitação confirmada |
 
 ### 5. Autorização
@@ -160,7 +163,8 @@ Execução de 2026-11-25T17:41:51.575Z, Bun 1.4.4: 91 casos em 10 categorias; 78
 | Mensagem enorme dentro do limite do broker (200 KB) | DLQ MALFORMED_MESSAGE | 1 veneno(s) na DLQ (MALFORMED_MESSAGE×1), sem escrita; a mensagem válida seguinte foi sempre processada | passou |
 | Mensagem acima do limite do SQS (2 MB) | recusada pelo broker, ou entregue e enviada à DLQ; consumidor segue | recusada pelo broker no envio; a válida seguinte foi processada | passou |
 | messageId repetido com conteúdo diferente | DLQ INBOX_PAYLOAD_CONFLICT; só o primeiro conteúdo é aplicado | 1 veneno(s) na DLQ (INBOX_PAYLOAD_CONFLICT×1), sem escrita; a mensagem válida seguinte foi sempre processada | passou |
-| Outro provedor reutiliza pela fila a chave de um primeiro | DLQ IDEMPOTENCY_CONFLICT; nada gravado e nada do primeiro na DLQ | 1 veneno(s) na DLQ (IDEMPOTENCY_CONFLICT×1), sem escrita; a mensagem válida seguinte foi sempre processada | passou |
+| Outro provedor reutiliza pela fila a chave de um primeiro | as duas aplicadas, cada uma no próprio provedor; nada na DLQ | 2 lançamentos, DLQ vazia | passou |
+| Outro provedor ocupa antes o messageId de um primeiro | comportamento atual: a messageId vale para o consumidor inteiro; a mensagem legítima vai à DLQ | a legítima não foi aplicada: 1 veneno(s) na DLQ (INBOX_PAYLOAD_CONFLICT×1), sem escrita; a mensagem válida seguinte foi sempre processada | limitação confirmada |
 | Logs do consumidor durante os venenos | uma linha JSON por evento, sem o corpo da mensagem | 4 linhas de log, sem a marca nem o valor | passou |
 | A fila de entrada não é autenticada | comportamento atual: quem consegue publicar na fila move qualquer wallet | WIN de um providerId desconhecido foi creditado; a proteção depende da política da fila | limitação confirmada |
 
@@ -179,7 +183,7 @@ Execução de 2026-11-25T17:41:51.575Z, Bun 1.4.4: 91 casos em 10 categorias; 78
 | Caso | Esperado | Observado | Resultado |
 | --- | --- | --- | --- |
 | Credenciais reconhecíveis nos arquivos versionados | nenhuma ocorrência | 8 padrões, nenhuma ocorrência | passou |
-| Credenciais reconhecíveis no histórico do git | nenhuma linha adicionada em commit algum | 27176 linhas adicionadas em 96 commits, nenhuma ocorrência | passou |
+| Credenciais reconhecíveis no histórico do git | nenhuma linha adicionada em commit algum | 27976 linhas adicionadas em 101 commits, nenhuma ocorrência | passou |
 | Senhas em strings de conexão versionadas | só as de desenvolvimento local | 5, todas para localhost ou nomes fictícios de teste | passou |
 | .env fora do git, hoje e no histórico | .env ignorado, não rastreado e nunca commitado | ignorado; só .env.example rastreado; nenhum .env em commit algum | passou |
 | .env.example sem credenciais | toda variável de credencial ou conexão vazia | 8 variáveis declaradas, todas vazias | passou |
@@ -209,6 +213,6 @@ Vale para essa data e para o `bun.lock` desse momento. Ausência de aviso não s
 - **SQS com mensagem assinada** ou autenticação do produtor; políticas IAM não existem no MiniStack.
 - **AWS real:** limites de tamanho, caracteres aceitos e permissões do SQS podem diferir dos do MiniStack.
 - *Fuzzing* sistemático, análise estática de segurança, varredura de imagens de container e revisão manual por terceiros.
-- *Request smuggling* atrás de proxy, ataques de temporização e canais laterais (a resposta `409` revela que uma chave existe).
+- *Request smuggling* atrás de proxy, ataques de temporização e canais laterais (sem autenticação, quem declara o `providerId` de outro descobre, pela resposta `409`, que ele já usou a chave).
 - Privilégios do banco: a aplicação conecta como dona das tabelas e não há papel restrito.
 - Segredos: a busca usa padrões conhecidos nos arquivos e no histórico local; um segredo sem formato reconhecível passaria.
