@@ -89,3 +89,40 @@ Todas têm padrão no código; não precisam estar no `.env`.
 | `OUTBOX_BATCH_SIZE` | `50` | Eventos reivindicados por passada |
 | `OUTBOX_LEASE_MS` | `30000` | Reserva de um evento reivindicado |
 | `HEALTH_CHECK_TIMEOUT_MS` | `2000` | Prazo de cada dependência no readiness |
+
+## Comandos
+
+Todos na raiz do repositório. As suítes de integração e de concorrência exigem os containers no ar, o `.env` preenchido e as filas criadas (`bun run infra:queues`): sem as filas, os testes de readiness falham.
+
+| Comando | O que faz | Resultado | Tempo medido |
+| --- | --- | --- | --- |
+| `bun run check` | Tipos (`tsc --noEmit`), lint e testes de unidade; não usa containers | 473 testes em 34 arquivos, 0 falhas | 8 s |
+| `bun run test:integration` | Integração com PostgreSQL e MiniStack reais | 443 testes em 41 arquivos, 0 falhas | 2 min 6 s |
+| `bun run test:concurrency` | Paralelismo e processos reais | 32 testes em 9 arquivos, 0 falhas | 50 s |
+| `bun run test:security` | Casos de abuso contra a API e a fila; relatório em `security-results/` | 92 casos em 10 arquivos: 78 passaram, 14 confirmam limitações, 0 falharam | 28 s |
+| `bun run test:load` | Carga completa (4 cenários) com conferência de invariantes; relatório em `load-results/` | Todas as invariantes passaram | 3 min 16 s |
+| `bun run test:load --smoke` | Verificação rápida da carga; os números não servem para análise | Todas as invariantes passaram | 25 s |
+| `bun run migration:up` | Aplica as migrations pendentes | 2 migrations em um banco vazio | 1 s |
+| `bun run migration:down` | Reverte **uma** migration por execução | 1 migration | 1 s |
+| `bun run infra:queues` | Cria as filas (pode ser repetido) | 3 filas | 1 s |
+| `bun run start` | Sobe a aplicação | | |
+
+Para rodar uma semente do teste de invariantes aleatórias:
+
+```bash
+INVARIANT_SEED=202 INVARIANT_OPS=150 bun test test/concurrency/random-invariants.test.ts   # 2 testes, 10 s
+```
+
+### Ambiente em que foi testado
+
+Medido em 2026-11-25, uma execução por comando (os tempos variam entre execuções):
+
+| Item | Valor |
+| --- | --- |
+| Sistema operacional | Windows 11 Pro (10.0.26300), x64 |
+| Máquina | AMD Ryzen 7 5700X (16 processadores lógicos), 32 GB de RAM |
+| Docker | Docker Desktop 29.9.2, Compose v5.6.1; VM com 2 CPUs e cerca de 3,8 GB |
+| Bun | 1.4.4 |
+| Imagens | `postgres:16-alpine` (16.16), `ministackorg/ministack:1.5.44` |
+
+**Linux e macOS não foram verificados.**
