@@ -71,7 +71,7 @@ async function poison(cases: readonly (readonly [label: string, body: string, re
     await healthy();
   }
   expect(await isQueueEmpty(env.sqs, env.queues.dlqUrl)).toBe(true);
-  return `${cases.length} venenos na DLQ (${tally(reasons)}), sem escrita; a válida seguinte foi processada em todos`;
+  return `${cases.length} veneno(s) na DLQ (${tally(reasons)}), sem escrita; a mensagem válida seguinte foi sempre processada`;
 }
 
 const withData = (data: Record<string, unknown>) => {

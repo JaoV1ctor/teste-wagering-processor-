@@ -143,7 +143,7 @@ securityCase('Ocupação antecipada da chave: B grava antes a chave que A usaria
   return 'B: 201; A com a chave recomendada: 409, 409; A só consegue com outra chave';
 }, 'limitação');
 
-securityCase('Replay não é lido por quem muda qualquer campo, mesmo conhecendo a chave', 'só o payload idêntico devolve o resultado; ele já exige conhecer todos os campos', async () => {
+securityCase('Replay idêntico, por quem conhece a chave e todos os campos', 'comportamento atual: devolve o resultado, porque nada identifica quem chama', async () => {
   const a = await victim();
   const replay = await submit(a.payload, a.key);
   expect(replay.status).toBe(201);
