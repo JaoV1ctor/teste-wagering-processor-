@@ -170,13 +170,29 @@ O que **ainda faltaria**: chamar a porta na consulta por `/providers/:providerId
 
 Resumo; o detalhe e a justificativa da maioria estão na seção de cada fase.
 
+- **UUID em maiúsculas (defeito conhecido):** a validação aceita, mas as comparações e o `payloadHash` diferenciam caixa. `playerId` em maiúsculas é rejeitado como `PLAYER_MISMATCH`, e reenviar a mesma chave mudando a caixa de um id dá `409`. Observado na API real; sem correção nem teste. A saída seria normalizar os UUIDs na borda.
+- **Chave de idempotência:** o header HTTP tem os espaços das pontas removidos; `data.idempotencyKey` da fila não.
+- **Contratos:** `POST /wallets` não é idempotente (repetir dá `409`); o `providerId` `internal` não é reservado; não há `statement_timeout`.
 - **Segurança:** sem autenticação; `/metrics` e health abertos; a aplicação conecta como dona das tabelas, e quem tem esse papel pode desligar triggers (não há papel restrito de banco).
 - **Escala:** escritas na mesma wallet são serializadas; throughput sob carga não foi medido (sem teste de carga). Prazos, lotes e backoffs são estimativas. Ver [Fase 2](#fase-2--betwinloss-por-http-idempotência-e-lock).
-- **Reversões:** sem reversão parcial; referência que não chega em cerca de 3 a 4,5 minutos vira `REJECTED`. Ver [Fase 3](#fase-3--refund-rollback-pending_reference-e-worker).
-- **Fila:** a ordem por wallet não sobrevive à DLQ, não cobre HTTP nem pendências, e não há heartbeat de visibilidade. Comportamentos verificados no MiniStack, não na AWS. Ver [Fase 4](#fase-4--consumidor-sqs-inbox-dlq-e-shutdown).
+- **Reversões e referências:** sem reversão parcial; referência que não chega em cerca de 3 a 4,5 minutos vira `REJECTED`, mas um reprocesso que só falha com erro não tem teto de tentativas. Ver [Limite do PENDING_REFERENCE](#limite-do-pending_reference).
+- **Fila (falhas):** erro inesperado vai à DLQ na primeira ocorrência, e mensagem anterior à criação da wallet também.
+- **Fila (ordem):** a ordem por wallet não sobrevive à DLQ, não cobre HTTP nem pendências, e não há heartbeat de visibilidade. Comportamentos verificados no MiniStack, não na AWS. Ver [Fase 4](#fase-4--consumidor-sqs-inbox-dlq-e-shutdown).
 - **Eventos:** at-least-once e sem ordem de entrega (o consumidor deduplica por `eventId` e ordena o saldo por `walletVersion`); outbox sem DLQ; inbox e outbox sem retenção. Ver [Fase 5](#fase-5--outbox-transacional-publishers-e-eventos-de-integração).
 - **Operação:** reconciliação sob demanda, com custo proporcional ao ledger da wallet; métricas por instância; sem dashboard, alertas nem tracing; saídas do runtime e de bibliotecas podem escapar do log JSON. Ver [Fase 6](#fase-6--reconciliação-health-métricas-e-logs).
+- **Relógio:** leases e backoffs usam o relógio da aplicação; desvio entre instâncias desloca vencimentos.
 - **Escopo:** o fluxo é exercitado em BRL (o modelo é multi-moeda e o conflito é testado); sem partidas dobradas; o `docker-compose.yml` sobe só Postgres e MiniStack, e a aplicação roda com `bun run start`.
+
+### Trade-offs assumidos
+
+| Escolha | Ganho | Custo |
+| --- | --- | --- |
+| Lock pessimista por wallet | Regras decididas sobre estado estável, sem tempestade de retries | Escritas da mesma wallet em série; quem espera segura uma conexão do pool |
+| Domínio separado do ORM, com mappers | Domínio puro e testável sem banco | Mais código; divergência entidade e tabela só aparece em execução |
+| Constraints e triggers no banco | Invariantes valem mesmo com erro na aplicação | Regras repetidas em dois lugares; mudar o schema exige migration |
+| Outbox com publicação separada | Nenhum evento sem commit nem perdido | Duplicatas possíveis, latência de cerca de 1 s, sem ordem de entrega |
+| Erro desconhecido na fila vai à DLQ | Bug não entra em laço de reentrega | Falha transitória não reconhecida exige reprocesso manual |
+| Log sem mensagem de erro de terceiros | Não vaza valores nem payload | Diagnóstico com menos texto |
 
 ---
 
