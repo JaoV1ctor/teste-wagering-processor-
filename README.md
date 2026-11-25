@@ -1,7 +1,5 @@
 # Distributed Wagering Processor
 
-**Nesta página:** [Início rápido](#início-rápido) · [Comandos](#comandos) · [Como funciona](#como-funciona) · [Exemplos](#exemplos-com-curl) · [Garantias](#mapa-de-garantias) · [Testes](#testes-e-evidências) · [Limitações](#limitações-conhecidas) · [Problemas](#solução-de-problemas)
-
 ## O que é
 
 Um serviço que recebe apostas, ganhos e estornos de vários provedores de jogos e mantém correto o saldo de cada carteira (*wallet*), junto com um extrato que nunca é alterado (*ledger*).
@@ -19,6 +17,8 @@ O difícil é continuar correto quando as coisas dão errado:
 Entradas: API HTTP e fila SQS. Stack: NestJS sob Bun, PostgreSQL e SQS. **Não há autenticação** (ver [Autenticação](#autenticação)).
 
 Decisões, alternativas, trade-offs e limitações: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+**Sumário:** [Início rápido](#início-rápido) · [Comandos](#comandos) · [Como funciona](#como-funciona) · [Exemplos com curl](#exemplos-com-curl) · [Autenticação](#autenticação) · [Mapa de garantias](#mapa-de-garantias) · [Testes e evidências](#testes-e-evidências) · [Limitações](#limitações-conhecidas) · [Solução de problemas](#solução-de-problemas) · [Como este projeto foi desenvolvido](#como-este-projeto-foi-desenvolvido)
 
 ## Início rápido
 
