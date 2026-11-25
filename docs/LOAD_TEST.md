@@ -10,7 +10,7 @@ bun run test:load            # execução completa: cerca de 3 min 15 s na máqu
 bun run test:load --smoke    # verificação rápida (cerca de 25 s); os números não servem para análise
 ```
 
-O comando usa o `.env`, recusa `DATABASE_URL` e `AWS_ENDPOINT_URL` que não sejam locais, cria um banco e filas próprios por cenário e os apaga no fim. Grava `report.md`, `results.json` e o stderr das instâncias em `load-results/<execução>/` (ignorado pelo git) e sai com código 1 se alguma invariante falhar.
+O comando usa o `.env`, recusa `DATABASE_URL` e `AWS_ENDPOINT_URL` que não sejam locais, cria um banco e filas próprios por cenário e, quando o cenário termina ou falha (inclusive no meio do setup), encerra as instâncias e apaga os dois; um processo morto durante a execução não limpa nada. Grava `report.md`, `results.json` e o stderr das instâncias em `load-results/<execução>/` (ignorado pelo git) e sai com código 1 se alguma invariante falhar.
 
 | Variável | Padrão | `--smoke` | Significado |
 | --- | --- | --- | --- |

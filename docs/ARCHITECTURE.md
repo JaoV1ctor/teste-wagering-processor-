@@ -72,8 +72,8 @@ Os testes de integração e de concorrência usam Postgres e MiniStack reais. A 
 
 | Comando | Cobre | Resultado |
 | --- | --- | --- |
-| `bun run check` | tipos, lint e testes de unidade | 473 testes em 34 arquivos, 0 falhas |
-| `bun run test:integration` | Postgres e MiniStack reais | 443 testes em 41 arquivos, 0 falhas |
+| `bun run check` | tipos, lint e testes de unidade | 498 testes em 36 arquivos, 0 falhas |
+| `bun run test:integration` | Postgres e MiniStack reais | 454 testes em 43 arquivos, 0 falhas |
 | `bun run test:concurrency` | paralelismo e processos reais | 32 testes em 9 arquivos, 0 falhas |
 
 ## Decisões transversais
@@ -253,7 +253,7 @@ Os arquivos de integração que moviam saldo sem essa conferência exigem, ao en
 
 `test/concurrency/random-invariants.test.ts` ataca a garantia central com sequências que ninguém escreveu à mão, contra Postgres e MiniStack reais. Um gerador próprio (`mulberry32`, sem biblioteca) produz, a partir de uma semente: wallets de vários jogadores em BRL e USD, `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK` de três provedores (com valores que estouram o saldo e o limite do tipo), replays, a mesma chave com outro payload ou em outro provedor, o mesmo id externo com outra chave, reversões antes da referência, reversões repetidas, entradas inválidas, reentregas na fila e passadas do worker. Cerca de um quarto dos envios usa a fila.
 
-Cada semente roda duas fases, cada uma em um banco descartável com filas próprias:
+Cada semente roda duas fases, cada uma em um banco descartável com filas próprias, apagados quando a fase termina, com sucesso ou falha, e quando o setup para no meio (um processo morto durante a execução não apaga nada):
 
 | Fase | Como executa | O que exige |
 | --- | --- | --- |

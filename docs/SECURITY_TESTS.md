@@ -9,11 +9,11 @@ docker compose up -d
 bun run test:security
 ```
 
-Aplicação real sobre o PostgreSQL e o MiniStack do `docker-compose.yml`, sem mocks desses dois. Cada arquivo de `test/security/` cria um banco e filas próprios e os apaga no fim. O relatório vai para `security-results/report.md` (ignorado pelo git) e o comando sai com código diferente de zero se algum caso falhar. Não usa rede externa.
+Aplicação real sobre o PostgreSQL e o MiniStack do `docker-compose.yml`, sem mocks desses dois. Cada arquivo de `test/security/` cria um banco e filas próprios e os apaga no fim, também quando o setup falha no meio; um processo morto durante a execução não apaga nada. O relatório vai para `security-results/report.md` (ignorado pelo git) e o comando sai com código diferente de zero se algum caso falhar. Não usa rede externa.
 
 - **passou:** o resultado esperado, que é o comportamento desejado, foi observado.
 - **limitação confirmada:** o teste fixa o comportamento **atual**, mais fraco que o desejável. Passar significa que a limitação continua lá.
-- Em casos de rejeição, o teste também confere que nada mudou no banco (wallets, saldos, versões, transações, ledger, inbox e outbox) e que a resposta não traz stack trace, SQL, erro do banco, string de conexão ou caminho do servidor.
+- Em casos de rejeição, o teste também confere que nada mudou no banco (wallets, saldos, versões, transações, ledger, inbox e outbox) e que o corpo da resposta não casa com nenhuma marca conhecida de stack trace, SQL (`select … from`, `insert into`, `update … set`), erro do banco ou do driver, string de conexão ou credencial e caminho do servidor (`test/support/leaks.ts`). A lista é finita, e essa conferência não examina os cabeçalhos. Quando a validação repete o valor enviado, só é descontado o texto entre aspas em `details[].message` de um `VALIDATION_ERROR`; o resto do corpo é examinado como veio. O detector tem auto-teste com vazamentos propositais e respostas limpas (`test/unit/leak-detector.test.ts` e `test/integration/leak-detector.test.ts`).
 - Alguns testes injetam falhas ou trocam um adaptador em memória (porta de identidade que nega, exceção no caso de uso); o banco e a fila continuam reais.
 
 ## Achados
