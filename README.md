@@ -25,8 +25,8 @@ O Docker Compose sobe **apenas a infraestrutura** (PostgreSQL 16 e MiniStack, qu
 | --- | --- | --- |
 | [Bun](https://bun.sh) | 1.4.4 | Executa a aplicação, os scripts e os testes |
 | Docker com Compose | Docker 29.9.2, Compose v5.6.1 | Precisa estar em execução |
-| Git | qualquer versão recente | |
-| `curl` e um shell bash | | Só para os [exemplos](#exemplos-com-curl); no Windows, use o Git Bash |
+| Git | 2.53.0 | |
+| `curl` e um shell bash | curl 8.18.0, bash 5.2.37 | Só para os [exemplos](#exemplos-com-curl); no Windows, use o Git Bash |
 
 Portas que precisam estar livres: **5432** (PostgreSQL), **4566** (MiniStack) e **3000** (aplicação).
 
@@ -92,7 +92,7 @@ Todas têm padrão no código; não precisam estar no `.env`.
 
 ## Comandos
 
-Todos na raiz do repositório. As suítes de integração e de concorrência exigem os containers no ar, o `.env` preenchido e as filas criadas (`bun run infra:queues`): sem as filas, os testes de readiness falham.
+Todos na raiz do repositório, com os containers no ar e o `.env` preenchido (o `check` não usa containers). A suíte de integração também exige as filas criadas (`bun run infra:queues`): sem elas, os testes de readiness falham. `test:security` e `test:load` criam os próprios bancos e filas.
 
 | Comando | O que faz | Resultado | Tempo medido |
 | --- | --- | --- | --- |
