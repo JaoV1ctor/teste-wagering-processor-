@@ -24,7 +24,7 @@ export interface IntegrationEventsInput {
 }
 
 /**
- * Quais eventos nascem de uma liquidação (regra em docs/ARCHITECTURE.md, "Fase 5"). Função pura; quem chama grava o resultado no outbox, na MESMA
+ * Quais eventos nascem de uma liquidação (regra em docs/ARCHITECTURE.md, "Eventos"). Função pura; quem chama grava o resultado no outbox, na MESMA
  * transação SQL, como último passo (wallet -> transação -> ledger -> outbox).
  *  - PROCESSED: `Processed` (inclusive `LOSS`) e, só se o saldo mudou, `BalanceChanged`, causado pelo `Processed`.
  *  - REJECTED: `Rejected` (inclusive o limite de espera da referência esgotado); nunca `BalanceChanged`.

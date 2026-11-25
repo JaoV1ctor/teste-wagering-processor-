@@ -73,7 +73,7 @@ CREATE TABLE wager_transactions (
   CONSTRAINT wt_idempotency_key_uq UNIQUE (idempotency_key),
   CONSTRAINT wt_external_id_uq     UNIQUE (provider_id, external_transaction_id),
 
-  -- REFUND/ROLLBACK exigem referência; BET/OPENING não têm; WIN/LOSS podem ter (ver docs/ARCHITECTURE.md, "Fase 3")
+  -- REFUND/ROLLBACK exigem referência; BET/OPENING não têm; WIN/LOSS podem ter (ver docs/ARCHITECTURE.md, "Interpretações do enunciado")
   CONSTRAINT wt_reference_by_kind CHECK (
        (kind IN ('REFUND','ROLLBACK') AND reference_external_transaction_id IS NOT NULL)
     OR (kind IN ('WIN','LOSS'))
@@ -91,7 +91,7 @@ CREATE TABLE wager_transactions (
   )
 );
 
--- Reversão única: no máximo UMA reversão efetiva por transação referenciada (ver docs/ARCHITECTURE.md, "Fase 3").
+-- Reversão única: no máximo UMA reversão efetiva por transação referenciada (ver docs/ARCHITECTURE.md, "Interpretações do enunciado").
 -- Mesmo que a aplicação falhe, o banco impede crédito duplicado por REFUND+ROLLBACK da mesma BET.
 CREATE UNIQUE INDEX wt_one_effective_reversal_uq
   ON wager_transactions (reference_transaction_id)

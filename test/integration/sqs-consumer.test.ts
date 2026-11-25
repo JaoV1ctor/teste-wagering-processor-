@@ -1,4 +1,4 @@
-// Consumidor SQS (Fase 4): Postgres REAL e MiniStack REAL. Os dublês só OBSERVAM a fila ou interceptam uma chamada (a fila por baixo é real).
+// Consumidor SQS (docs/ARCHITECTURE.md, "Fluxo de uma mensagem"): Postgres REAL e MiniStack REAL. Os dublês só OBSERVAM a fila ou interceptam uma chamada (a fila por baixo é real).
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID as uuid } from 'node:crypto';
 import type { SQSClient } from '@aws-sdk/client-sqs';
