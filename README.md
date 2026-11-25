@@ -44,18 +44,7 @@ bun install
 cp .env.example .env
 ```
 
-Preencha o `.env`. O `.env.example` é versionado com as chaves vazias; estes são os valores do ambiente local do `docker-compose.yml`:
-
-```dotenv
-DATABASE_URL=postgres://wager:wager@localhost:5432/wager
-AWS_ENDPOINT_URL=http://localhost:4566
-AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=test
-AWS_SECRET_ACCESS_KEY=test
-SQS_WAGER_QUEUE_NAME=wager-transactions.fifo
-SQS_WAGER_DLQ_NAME=wager-transactions-dlq.fifo
-SQS_EVENTS_QUEUE_NAME=wager-events
-```
+O [`.env.example`](.env.example) já vem com os valores do ambiente local do `docker-compose.yml` (credenciais de desenvolvimento): para rodar localmente não é preciso editar nada. Em qualquer outro ambiente, troque-os por segredos reais no `.env`, que é ignorado pelo git e não deve ser versionado.
 
 Depois, nesta ordem:
 
@@ -97,7 +86,7 @@ Todas têm padrão no código; não precisam estar no `.env`.
 
 ## Comandos
 
-Todos na raiz do repositório, com os containers no ar e o `.env` preenchido (o `check` não usa containers). A suíte de integração também exige as filas criadas (`bun run infra:queues`): sem elas, os testes de readiness falham. `test:security` e `test:load` criam os próprios bancos e filas.
+Todos na raiz do repositório, com os containers no ar e o `.env` copiado do exemplo (o `check` não usa containers). A suíte de integração também exige as filas criadas (`bun run infra:queues`): sem elas, os testes de readiness falham. `test:security` e `test:load` criam os próprios bancos e filas.
 
 | Comando | O que faz | Resultado | Tempo medido |
 | --- | --- | --- | --- |

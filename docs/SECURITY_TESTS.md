@@ -186,7 +186,7 @@ Execução de 2026-11-25T18:40:05.741Z, Bun 1.4.4: 92 casos em 10 categorias; 78
 | Credenciais reconhecíveis no histórico do git | nenhuma linha adicionada em commit algum | 29074 linhas adicionadas em 108 commits, nenhuma ocorrência | passou |
 | Senhas em strings de conexão versionadas | só as de desenvolvimento local | 5, todas para localhost ou nomes fictícios de teste | passou |
 | .env fora do git, hoje e no histórico | .env ignorado, não rastreado e nunca commitado | ignorado; só .env.example rastreado; nenhum .env em commit algum | passou |
-| .env.example sem credenciais | toda variável de credencial ou conexão vazia | 8 variáveis declaradas, todas vazias | passou |
+| .env.example só com valores do ambiente local | exatamente as variáveis e os valores locais previstos; qualquer outro valor reprova | 8 variáveis, todas com os valores do ambiente local | passou |
 | Senha fixa no docker-compose.yml | comportamento atual: credencial de desenvolvimento versionada e porta publicada no host | POSTGRES_PASSWORD de desenvolvimento e portas 5432 e 4566 publicadas em todas as interfaces | limitação confirmada |
 | Dependências com versão fixa e lockfile versionado | sem ^ ou ~; bun.lock rastreado | 18 dependências diretas com versão exata | passou |
 

@@ -479,7 +479,7 @@ Observação medida (3 rodadas de 30 apostas): com a ordem errada, `FOR UPDATE` 
 
 ##### Limitações da Fase 0
 
-- `.env` é local e ignorado pelo git; copie `.env.example`, que tem só as chaves, e preencha com valores de desenvolvimento compatíveis com o `docker-compose.yml`. `requireEnv` falha cedo se faltar variável.
+- `.env` é local e ignorado pelo git; copie `.env.example`, que traz os valores de desenvolvimento do `docker-compose.yml`; em outro ambiente, troque-os por segredos reais. `requireEnv` falha cedo se faltar variável.
 - Cada migration roda em transação; `bun run migration:down` desfaz uma por vez, e o `down` da inicial apaga todos os dados do schema (esperado em dev; **nunca** rodar contra dados reais).
 - O banco de testes acumula linhas entre execuções (UUIDs aleatórios, sem colisão). Isolamento por banco/schema fica para quando a suíte crescer.
 

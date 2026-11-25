@@ -60,11 +60,22 @@ securityCase('.env fora do git, hoje e no histórico', '.env ignorado, não rast
   return 'ignorado; só .env.example rastreado; nenhum .env em commit algum';
 });
 
-securityCase('.env.example sem credenciais', 'toda variável de credencial ou conexão vazia', async () => {
-  const assignments = readFileSync('.env.example', 'utf8').split('\n').filter((line) => /^\s*[A-Z_]+=/.test(line));
-  const filled = assignments.filter((line) => !/=\s*(#.*)?$/.test(line.trim()));
-  expect(filled).toEqual([]);
-  return `${assignments.length} variáveis declaradas, todas vazias`;
+/** O que o `.env.example` pode trazer: só o ambiente local do docker-compose.yml. Variável a mais, a menos ou com outro valor reprova. */
+const LOCAL_ENV_EXAMPLE = [
+  'DATABASE_URL=postgres://wager:wager@localhost:5432/wager',
+  'AWS_ENDPOINT_URL=http://localhost:4566',
+  'AWS_REGION=us-east-1',
+  'AWS_ACCESS_KEY_ID=test',
+  'AWS_SECRET_ACCESS_KEY=test',
+  'SQS_WAGER_QUEUE_NAME=wager-transactions.fifo',
+  'SQS_WAGER_DLQ_NAME=wager-transactions-dlq.fifo',
+  'SQS_EVENTS_QUEUE_NAME=wager-events',
+];
+
+securityCase('.env.example só com valores do ambiente local', 'exatamente as variáveis e os valores locais previstos; qualquer outro valor reprova', async () => {
+  const assignments = readFileSync('.env.example', 'utf8').split('\n').map((line) => line.trim()).filter((line) => /^[A-Z_]+=/.test(line));
+  expect(assignments).toEqual(LOCAL_ENV_EXAMPLE);
+  return `${assignments.length} variáveis, todas com os valores do ambiente local`;
 });
 
 securityCase('Senha fixa no docker-compose.yml', 'comportamento atual: credencial de desenvolvimento versionada e porta publicada no host', async () => {
